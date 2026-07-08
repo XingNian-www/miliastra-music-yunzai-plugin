@@ -16,7 +16,13 @@ git clone https://github.com/XingNian-www/miliastra-music-yunzai-plugin.git ./pl
 
 ## 配置
 
-编辑 `config/config.js`：
+插件自带默认配置 `config/default.js`。需要修改后端地址时，复制示例配置为本地配置：
+
+```bash
+cp config/config.example.js config/config.js
+```
+
+然后编辑 `config/config.js`：
 
 ```js
 export default {
@@ -37,7 +43,18 @@ export default {
 }
 ```
 
+`config/config.js` 已加入 `.gitignore`，插件更新时不会被 `git pull` 覆盖。更新只会改动默认配置和示例配置。
+
 `key` 会用于命令里的后端选择，例如 `#千星A状态`。不要把后端 key 配成 `状态`、`发送`、`启动`、`截图` 或 `列表`。
+
+从旧版本更新且已经改过 `config/config.js` 时，先备份自己的配置，再更新插件，最后把配置放回去：
+
+```bash
+cp config/config.js /tmp/miliastra-music-config.js
+git checkout -- config/config.js
+git pull
+cp /tmp/miliastra-music-config.js config/config.js
+```
 
 ## 命令
 

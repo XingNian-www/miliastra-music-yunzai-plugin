@@ -1,5 +1,5 @@
 import plugin from "../../../lib/plugins/plugin.js"
-import config from "../config/config.js"
+import config from "../config/index.js"
 
 const ACTIONS = ["状态", "发送", "启动", "截图", "列表"]
 const SELECTOR_TTL_MS = 60_000
