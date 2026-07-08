@@ -25,21 +25,21 @@ export class qianxing extends plugin {
     })
   }
 
-  async handleQianxing(e) {
-    const parsed = parseCommand(e.msg || "")
+  async handleQianxing(e = this.e) {
+    const parsed = parseCommand(messageText(e))
     if (!parsed) {
       return false
     }
 
     if (parsed.action === "列表") {
-      await e.reply(formatBackendList())
+      await this.replyMessage(e, formatBackendList())
       return true
     }
 
     if (parsed.backendKey) {
       const backend = findBackend(parsed.backendKey)
       if (!backend) {
-        await e.reply(`未找到千星后端：${parsed.backendKey}`)
+        await this.replyMessage(e, `未找到千星后端：${parsed.backendKey}`)
         return true
       }
       await this.runSingle(e, backend, parsed)
@@ -55,7 +55,7 @@ export class qianxing extends plugin {
     return true
   }
 
-  async handleSelection(e) {
+  async handleSelection(e = this.e) {
     const key = selectionKey(e)
     const selection = pendingSelections.get(key)
     if (!selection || Date.now() > selection.expiresAt) {
@@ -63,10 +63,10 @@ export class qianxing extends plugin {
       return false
     }
 
-    const index = Number((e.msg || "").trim()) - 1
+    const index = Number(messageText(e).trim()) - 1
     const backend = normalizedBackends()[index]
     if (!backend) {
-      await e.reply("选择无效，请重新发送 #千星启动 或 #千星截图")
+      await this.replyMessage(e, "选择无效，请重新发送 #千星启动 或 #千星截图")
       return true
     }
 
@@ -81,7 +81,7 @@ export class qianxing extends plugin {
   async startSelector(e, action) {
     const backends = normalizedBackends()
     if (backends.length === 0) {
-      await e.reply("未配置千星后端")
+      await this.replyMessage(e, "未配置千星后端")
       return
     }
     if (backends.length === 1) {
@@ -95,7 +95,7 @@ export class qianxing extends plugin {
       expiresAt: Date.now() + SELECTOR_TTL_MS
     })
 
-    await e.reply([
+    await this.replyMessage(e, [
       `请选择要${action}的千星后端：`,
       ...summaries.map((line, index) => `${index + 1}. ${line}`),
       "",
@@ -106,12 +106,12 @@ export class qianxing extends plugin {
   async runBroadcast(e, parsed) {
     const backends = normalizedBackends()
     if (backends.length === 0) {
-      await e.reply("未配置千星后端")
+      await this.replyMessage(e, "未配置千星后端")
       return
     }
 
     if (parsed.action === "发送" && !parsed.text.trim()) {
-      await e.reply("用法：#千星发送 <内容>")
+      await this.replyMessage(e, "用法：#千星发送 <内容>")
       return
     }
 
@@ -122,25 +122,32 @@ export class qianxing extends plugin {
         return formatUnavailable(backend)
       }
     }))
-    await e.reply(results.join("\n\n"))
+    await this.replyMessage(e, results.join("\n\n"))
   }
 
   async runSingle(e, backend, parsed) {
     if (parsed.action === "发送" && !parsed.text.trim()) {
-      await e.reply(`用法：#千星${backend.key}发送 <内容>`)
+      await this.replyMessage(e, `用法：#千星${backend.key}发送 <内容>`)
       return
     }
 
     try {
       if (parsed.action === "截图") {
         const image = await requestScreenshot(backend)
-        await e.reply([`${backend.name} 截图：`, image])
+        await this.replyMessage(e, [`${backend.name} 截图：`, image])
         return
       }
-      await e.reply(await runAction(backend, parsed))
+      await this.replyMessage(e, await runAction(backend, parsed))
     } catch (error) {
-      await e.reply(formatUnavailable(backend))
+      await this.replyMessage(e, formatUnavailable(backend))
     }
+  }
+
+  async replyMessage(e, message) {
+    if (e?.reply) {
+      return e.reply(message)
+    }
+    return this.reply(message)
   }
 }
 
@@ -329,4 +336,8 @@ async function apiFetch(backend, path, options = {}) {
 
 function selectionKey(e) {
   return `${e.group_id || "private"}:${e.user_id || "unknown"}`
+}
+
+function messageText(e) {
+  return String(e?.msg || e?.message || "")
 }

@@ -1,1 +1,1 @@
-import "./apps/qianxing.js"
+export * from "./apps/qianxing.js"
