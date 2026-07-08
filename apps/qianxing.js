@@ -151,7 +151,7 @@ export class qianxing extends plugin {
   }
 }
 
-export function parseCommand(message) {
+function parseCommand(message) {
   const text = String(message || "").trim()
   if (!text.startsWith("#千星")) {
     return null

@@ -1,1 +1,1 @@
-export * from "./apps/qianxing.js"
+export { qianxing } from "./apps/qianxing.js"
