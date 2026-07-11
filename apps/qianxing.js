@@ -1,15 +1,27 @@
 import plugin from "../../../lib/plugins/plugin.js"
 import config from "../config/index.js"
 
-const ACTIONS = ["状态", "发送", "启动", "截图", "列表"]
+const ACTIONS = [
+  action("帮助", ["帮助", "help"]),
+  action("列表", ["列表", "后端"]),
+  action("状态", ["状态"]),
+  action("监控", ["监控"]),
+  action("队列", ["队列"]),
+  action("截图", ["截图"]),
+  action("健康", ["健康", "health"])
+]
+const ACTION_ALIASES = ACTIONS
+  .flatMap((item) => item.aliases.map((alias) => ({ alias, action: item })))
+  .sort((left, right) => right.alias.length - left.alias.length)
+const READ_ONLY_PATHS = new Set(["/status", "/monitor", "/queue", "/health", "/screenshot"])
 const SELECTOR_TTL_MS = 60_000
 const pendingSelections = new Map()
 
 export class qianxing extends plugin {
   constructor() {
     super({
-      name: "千星控制",
-      dsc: "Miliastra Wonderland Music 配套控制插件",
+      name: "千星点歌监控",
+      dsc: "Miliastra Wonderland Music 只读监控插件",
       event: "message",
       priority: 5000,
       rule: [
@@ -31,6 +43,11 @@ export class qianxing extends plugin {
       return false
     }
 
+    if (parsed.action === "帮助") {
+      await this.replyMessage(e, formatHelp())
+      return true
+    }
+
     if (parsed.action === "列表") {
       await this.replyMessage(e, formatBackendList())
       return true
@@ -46,8 +63,8 @@ export class qianxing extends plugin {
       return true
     }
 
-    if (parsed.action === "启动" || parsed.action === "截图") {
-      await this.startSelector(e, parsed.action)
+    if (parsed.action === "截图") {
+      await this.startScreenshotSelector(e, parsed)
       return true
     }
 
@@ -66,40 +83,37 @@ export class qianxing extends plugin {
     const index = Number(messageText(e).trim()) - 1
     const backend = normalizedBackends()[index]
     if (!backend) {
-      await this.replyMessage(e, "选择无效，请重新发送 #千星启动 或 #千星截图")
+      await this.replyMessage(e, "选择无效，请重新发送 #千星截图")
       return true
     }
 
     pendingSelections.delete(key)
-    await this.runSingle(e, backend, {
-      action: selection.action,
-      text: ""
-    })
+    await this.runSingle(e, backend, selection.parsed)
     return true
   }
 
-  async startSelector(e, action) {
+  async startScreenshotSelector(e, parsed) {
     const backends = normalizedBackends()
     if (backends.length === 0) {
       await this.replyMessage(e, "未配置千星后端")
       return
     }
     if (backends.length === 1) {
-      await this.runSingle(e, backends[0], { action, text: "" })
+      await this.runSingle(e, backends[0], parsed)
       return
     }
 
     const summaries = await Promise.all(backends.map((backend) => statusLine(backend)))
     pendingSelections.set(selectionKey(e), {
-      action,
+      parsed,
       expiresAt: Date.now() + SELECTOR_TTL_MS
     })
 
     await this.replyMessage(e, [
-      `请选择要${action}的千星后端：`,
+      "请选择要查看截图的千星后端：",
       ...summaries.map((line, index) => `${index + 1}. ${line}`),
       "",
-      `回复 1-${backends.length} ${action === "启动" ? "启动对应后端" : "获取对应截图"}`
+      `回复 1-${backends.length} 获取对应截图`
     ].join("\n"))
   }
 
@@ -110,27 +124,17 @@ export class qianxing extends plugin {
       return
     }
 
-    if (parsed.action === "发送" && !parsed.text.trim()) {
-      await this.replyMessage(e, "用法：#千星发送 <内容>")
-      return
-    }
-
     const results = await Promise.all(backends.map(async (backend) => {
       try {
         return await runAction(backend, parsed)
       } catch (error) {
-        return formatUnavailable(backend)
+        return formatActionError(backend, error)
       }
     }))
     await this.replyMessage(e, results.join("\n\n"))
   }
 
   async runSingle(e, backend, parsed) {
-    if (parsed.action === "发送" && !parsed.text.trim()) {
-      await this.replyMessage(e, `用法：#千星${backend.key}发送 <内容>`)
-      return
-    }
-
     try {
       if (parsed.action === "截图") {
         const image = await requestScreenshot(backend)
@@ -139,7 +143,7 @@ export class qianxing extends plugin {
       }
       await this.replyMessage(e, await runAction(backend, parsed))
     } catch (error) {
-      await this.replyMessage(e, formatUnavailable(backend))
+      await this.replyMessage(e, formatActionError(backend, error))
     }
   }
 
@@ -151,6 +155,10 @@ export class qianxing extends plugin {
   }
 }
 
+function action(name, aliases) {
+  return { name, aliases }
+}
+
 function parseCommand(message) {
   const text = String(message || "").trim()
   if (!text.startsWith("#千星")) {
@@ -159,32 +167,45 @@ function parseCommand(message) {
 
   const rest = text.slice("#千星".length).trim()
   if (!rest) {
-    return { action: "状态", backendKey: "", text: "" }
+    return { action: "状态", backendKey: "" }
   }
 
-  for (const action of ACTIONS) {
-    if (rest === action) {
-      return { action, backendKey: "", text: "" }
-    }
-    if (rest.startsWith(action)) {
-      const next = rest.slice(action.length)
-      if (!next || /^\s/.test(next)) {
-        return { action, backendKey: "", text: next.trimStart() }
-      }
-    }
+  const direct = matchActionAtStart(rest)
+  if (direct) {
+    return direct
   }
 
-  for (const action of ACTIONS.filter((item) => item !== "列表")) {
-    const index = rest.indexOf(action)
-    if (index > 0) {
-      const backendKey = rest.slice(0, index).trim()
-      const text = rest.slice(index + action.length).trimStart()
-      if (backendKey) {
-        return { action, backendKey, text }
-      }
-    }
+  const withBackend = matchActionWithBackend(rest)
+  if (withBackend) {
+    return withBackend
   }
 
+  if (findBackend(rest)) {
+    return { action: "状态", backendKey: rest }
+  }
+
+  return null
+}
+
+function matchActionAtStart(text) {
+  for (const { alias, action: item } of ACTION_ALIASES) {
+    if (text === alias) {
+      return { action: item.name, backendKey: "" }
+    }
+  }
+  return null
+}
+
+function matchActionWithBackend(text) {
+  for (const { alias, action: item } of ACTION_ALIASES) {
+    if (!text.endsWith(alias)) {
+      continue
+    }
+    const backendKey = text.slice(0, -alias.length).trim()
+    if (backendKey) {
+      return { action: item.name, backendKey }
+    }
+  }
   return null
 }
 
@@ -193,9 +214,21 @@ function normalizedBackends() {
     .map((backend, index) => ({
       key: String(backend.key || index + 1),
       name: backend.name || `${backend.key || index + 1}号千星`,
-      baseUrl: String(backend.baseUrl || "").replace(/\/+$/, "")
+      baseUrl: String(backend.baseUrl || "").replace(/\/+$/, ""),
+      accessToken: firstNonEmpty(backend.accessToken, config.accessToken),
+      screenshotQuality: backend.screenshotQuality ?? config.screenshotQuality
     }))
     .filter((backend) => backend.baseUrl)
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim()
+    if (text) {
+      return text
+    }
+  }
+  return ""
 }
 
 function findBackend(key) {
@@ -212,28 +245,35 @@ function formatBackendList() {
   }
   return [
     "千星后端：",
-    ...backends.map((backend, index) =>
-      `${index + 1}. ${backend.name}（${backend.key}）${backend.baseUrl}`
-    )
+    ...backends.map((backend, index) => {
+      const token = backend.accessToken ? "，已配置访问令牌" : ""
+      return `${index + 1}. ${backend.name}（${backend.key}）${backend.baseUrl}${token}`
+    })
+  ].join("\n")
+}
+
+function formatHelp() {
+  return [
+    "千星点歌监控命令：",
+    "#千星状态 / #千星监控 / #千星队列 / #千星健康",
+    "#千星截图 / #千星列表",
+    "指定后端：#千星A状态、#千星A监控、#千星A队列、#千星A截图"
   ].join("\n")
 }
 
 async function runAction(backend, parsed) {
-  if (parsed.action === "状态") {
-    return statusSummary(backend)
+  switch (parsed.action) {
+    case "状态":
+      return statusSummary(backend)
+    case "监控":
+      return monitorSummary(backend)
+    case "队列":
+      return queueSummary(backend)
+    case "健康":
+      return healthSummary(backend)
+    default:
+      throw new Error(`Unsupported read-only action: ${parsed.action}`)
   }
-  if (parsed.action === "发送") {
-    await apiJson(backend, "/chat/send", {
-      method: "POST",
-      query: { text: parsed.text }
-    })
-    return `${backend.name}：已加入发送队列`
-  }
-  if (parsed.action === "启动") {
-    await apiJson(backend, "/startup/wonderland", { method: "POST" })
-    return "正在启动游戏并进入千星"
-  }
-  throw new Error(`Unsupported action: ${parsed.action}`)
 }
 
 async function statusSummary(backend) {
@@ -249,12 +289,33 @@ async function statusSummary(backend) {
   ].join("\n")
 }
 
+async function monitorSummary(backend) {
+  const monitor = await apiJson(backend, "/monitor")
+  return [
+    `${backend.name}：${monitor.status || "状态未知"}`,
+    formatPlaybackController(monitor.playbackController),
+    formatQueue(Array.isArray(monitor.queue) ? monitor.queue : []),
+    formatPendingTasks(monitor.pendingTasks),
+    formatChatListener(monitor.chatListener)
+  ].filter(Boolean).join("\n")
+}
+
+async function queueSummary(backend) {
+  const queue = await apiJson(backend, "/queue")
+  return [`${backend.name}：`, formatQueue(Array.isArray(queue) ? queue : [])].join("\n")
+}
+
+async function healthSummary(backend) {
+  const text = await apiText(backend, "/health")
+  return `${backend.name}：${text || "OK"}`
+}
+
 async function statusLine(backend) {
   try {
     const status = await apiJson(backend, "/status")
     return `${backend.name}：在线，${formatPlayerStatus(status)}`
   } catch (error) {
-    return `${backend.name}：离线或接口不可用`
+    return formatActionError(backend, error)
   }
 }
 
@@ -270,6 +331,43 @@ function formatPlayerStatus(status) {
   return `${state}，${title}${volume}`
 }
 
+function formatPlaybackController(controller = {}) {
+  const parts = [
+    controller.state ? `控制器：${controller.state}` : "",
+    controller.pauseReason ? `暂停原因 ${controller.pauseReason}` : "",
+    controller.activeKeyword ? `活动歌曲 ${controller.activeKeyword}` : "",
+    controller.lastObservationReliability ? `观测 ${controller.lastObservationReliability}` : ""
+  ].filter(Boolean)
+  return parts.join("，")
+}
+
+function formatPendingTasks(tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    return "待执行任务：空"
+  }
+  const limit = Number(config.queuePreviewLimit || 5)
+  return [`待执行任务：${tasks.length} 个`, ...tasks.slice(0, limit).map((task, index) => `${index + 1}. ${task}`)].join("\n")
+}
+
+function formatChatListener(listener = {}) {
+  const mode = listenerModeLabel(listener.mode)
+  const pending = listenerModeLabel(listener.pendingMode)
+  if (!mode && !pending) {
+    return ""
+  }
+  return `监听：${mode || "未知"}${pending ? `，切换中 ${pending}` : ""}`
+}
+
+function listenerModeLabel(value) {
+  if (value === "primary" || value === "一级监听") {
+    return "一级监听"
+  }
+  if (value === "secondary" || value === "二级监听") {
+    return "二级监听"
+  }
+  return value || ""
+}
+
 function formatQueue(queue) {
   const limit = Number(config.queuePreviewLimit || 5)
   if (queue.length === 0) {
@@ -277,7 +375,8 @@ function formatQueue(queue) {
   }
   const preview = queue.slice(0, limit).map((item, index) => {
     const source = item.source ? ` [${item.source}]` : ""
-    return `${index + 1}. ${item.keyword || item.uri || "未命名"}${source}`
+    const accompaniment = item.preferAccompaniment || item.prefer_accompaniment ? " 伴奏" : ""
+    return `${index + 1}. ${item.keyword || item.uri || "未命名"}${source}${accompaniment}`
   })
   return [`队列：${queue.length} 首`, ...preview].join("\n")
 }
@@ -292,41 +391,66 @@ function formatTime(value) {
   return `${minutes}:${rest}`
 }
 
-function formatUnavailable(backend) {
+function formatActionError(backend, error) {
+  if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return `${backend.name}：访问令牌无效或缺失`
+    }
+    const message = error.body.replace(/^错误:\s*/, "").trim()
+    return `${backend.name}：${message || `接口返回 HTTP ${error.status}`}`
+  }
   return `${backend.name}：千星机器人未在线或接口不可用`
 }
 
 async function requestScreenshot(backend) {
-  const response = await apiFetch(backend, "/screenshot")
+  const quality = String(backend.screenshotQuality || config.screenshotQuality || 88)
+  const response = await apiFetch(backend, "/screenshot", { quality })
   const arrayBuffer = await response.arrayBuffer()
   const buffer = Buffer.from(arrayBuffer)
   return segment.image(buffer)
 }
 
-async function apiJson(backend, path, options = {}) {
-  const response = await apiFetch(backend, path, options)
-  const text = await response.text()
+async function apiJson(backend, path) {
+  const text = await apiText(backend, path)
   if (!text) {
     return {}
   }
   return JSON.parse(text)
 }
 
-async function apiFetch(backend, path, options = {}) {
+async function apiText(backend, path) {
+  const response = await apiFetch(backend, path)
+  return response.text()
+}
+
+async function apiFetch(backend, path, query = {}) {
+  if (!READ_ONLY_PATHS.has(path)) {
+    throw new Error(`Blocked non-monitoring API path: ${path}`)
+  }
+
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), Number(config.requestTimeoutMs || 5000))
   const url = new URL(`${backend.baseUrl}${path}`)
-  for (const [key, value] of Object.entries(options.query || {})) {
-    url.searchParams.set(key, value)
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, value)
+    }
+  }
+
+  const headers = {}
+  if (backend.accessToken) {
+    headers["X-Miliastra-Token"] = backend.accessToken
   }
 
   try {
     const response = await fetch(url, {
-      method: options.method || "GET",
-      signal: controller.signal
+      method: "GET",
+      signal: controller.signal,
+      headers
     })
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+      const body = await response.text().catch(() => "")
+      throw new ApiError(response.status, body)
     }
     return response
   } finally {
@@ -340,4 +464,12 @@ function selectionKey(e) {
 
 function messageText(e) {
   return String(e?.msg || e?.message || "")
+}
+
+class ApiError extends Error {
+  constructor(status, body) {
+    super(`HTTP ${status}`)
+    this.status = status
+    this.body = body || ""
+  }
 }

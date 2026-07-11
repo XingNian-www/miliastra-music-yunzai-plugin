@@ -1,7 +1,7 @@
 {
   "name": "miliastra-music-yunzai-plugin",
   "version": "0.1.0",
-  "description": "Yunzai companion plugin for the Miliastra Wonderland Music song request tool.",
+  "description": "Read-only Yunzai monitoring plugin for the Miliastra Wonderland Music song request tool.",
   "author": "XingNian-www",
   "license": "GPL-3.0-or-later",
   "type": "module",
