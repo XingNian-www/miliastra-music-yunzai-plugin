@@ -1,19 +1,41 @@
 import plugin from "../../../lib/plugins/plugin.js"
 import config from "../config/index.js"
 
+const STARTUP_ACTIONS = [
+  {
+    name: "启动原神",
+    path: "/startup/game",
+    reply: "正在启动原神",
+    instruction: "启动对应后端的原神"
+  },
+  {
+    name: "进入千星",
+    path: "/startup/enter-wonderland",
+    reply: "正在进入千星",
+    instruction: "让对应后端进入千星"
+  }
+]
 const ACTIONS = [
   action("帮助", ["帮助", "help"]),
   action("列表", ["列表", "后端"]),
   action("状态", ["状态"]),
   action("监控", ["监控"]),
   action("队列", ["队列"]),
+  ...STARTUP_ACTIONS.map((item) => action(item.name, [item.name])),
   action("截图", ["截图"]),
   action("健康", ["健康", "health"])
 ]
 const ACTION_ALIASES = ACTIONS
   .flatMap((item) => item.aliases.map((alias) => ({ alias, action: item })))
   .sort((left, right) => right.alias.length - left.alias.length)
-const READ_ONLY_PATHS = new Set(["/status", "/monitor", "/queue", "/health", "/screenshot"])
+const API_METHODS = new Map([
+  ["/status", "GET"],
+  ["/monitor", "GET"],
+  ["/queue", "GET"],
+  ["/health", "GET"],
+  ["/screenshot", "GET"],
+  ...STARTUP_ACTIONS.map((item) => [item.path, "POST"])
+])
 const SELECTOR_TTL_MS = 60_000
 const pendingSelections = new Map()
 
@@ -21,7 +43,7 @@ export class qianxing extends plugin {
   constructor() {
     super({
       name: "千星点歌监控",
-      dsc: "Miliastra Wonderland Music 只读监控插件",
+      dsc: "Miliastra Wonderland Music 监控与启动插件",
       event: "message",
       priority: 5000,
       rule: [
@@ -63,8 +85,8 @@ export class qianxing extends plugin {
       return true
     }
 
-    if (parsed.action === "截图") {
-      await this.startScreenshotSelector(e, parsed)
+    if (isSelectorAction(parsed.action)) {
+      await this.startSelector(e, parsed)
       return true
     }
 
@@ -83,7 +105,7 @@ export class qianxing extends plugin {
     const index = Number(messageText(e).trim()) - 1
     const backend = normalizedBackends()[index]
     if (!backend) {
-      await this.replyMessage(e, "选择无效，请重新发送 #千星截图")
+      await this.replyMessage(e, "选择无效，请重新发送 #千星启动原神、#千星进入千星 或 #千星截图")
       return true
     }
 
@@ -92,13 +114,13 @@ export class qianxing extends plugin {
     return true
   }
 
-  async startScreenshotSelector(e, parsed) {
+  async startSelector(e, parsed) {
     const backends = normalizedBackends()
     if (backends.length === 0) {
       await this.replyMessage(e, "未配置千星后端")
       return
     }
-    if (backends.length === 1) {
+    if (backends.length === 1 && parsed.action === "截图") {
       await this.runSingle(e, backends[0], parsed)
       return
     }
@@ -110,10 +132,10 @@ export class qianxing extends plugin {
     })
 
     await this.replyMessage(e, [
-      "请选择要查看截图的千星后端：",
+      `请选择要${parsed.action}的千星后端：`,
       ...summaries.map((line, index) => `${index + 1}. ${line}`),
       "",
-      `回复 1-${backends.length} 获取对应截图`
+      `回复 1-${backends.length} ${selectorInstruction(parsed.action)}`
     ].join("\n"))
   }
 
@@ -157,6 +179,18 @@ export class qianxing extends plugin {
 
 function action(name, aliases) {
   return { name, aliases }
+}
+
+function isSelectorAction(actionName) {
+  return actionName === "截图" || Boolean(findStartupAction(actionName))
+}
+
+function selectorInstruction(actionName) {
+  return findStartupAction(actionName)?.instruction || "获取对应截图"
+}
+
+function findStartupAction(actionName) {
+  return STARTUP_ACTIONS.find((item) => item.name === actionName)
 }
 
 function parseCommand(message) {
@@ -256,12 +290,18 @@ function formatHelp() {
   return [
     "千星点歌监控命令：",
     "#千星状态 / #千星监控 / #千星队列 / #千星健康",
-    "#千星截图 / #千星列表",
-    "指定后端：#千星A状态、#千星A监控、#千星A队列、#千星A截图"
+    "#千星启动原神 / #千星进入千星 / #千星截图 / #千星列表",
+    "指定后端：#千星A状态、#千星A启动原神、#千星A进入千星、#千星A截图"
   ].join("\n")
 }
 
 async function runAction(backend, parsed) {
+  const startup = findStartupAction(parsed.action)
+  if (startup) {
+    await apiJson(backend, startup.path)
+    return startup.reply
+  }
+
   switch (parsed.action) {
     case "状态":
       return statusSummary(backend)
@@ -424,8 +464,9 @@ async function apiText(backend, path) {
 }
 
 async function apiFetch(backend, path, query = {}) {
-  if (!READ_ONLY_PATHS.has(path)) {
-    throw new Error(`Blocked non-monitoring API path: ${path}`)
+  const method = API_METHODS.get(path)
+  if (!method) {
+    throw new Error(`Blocked unsupported API path: ${path}`)
   }
 
   const controller = new AbortController()
@@ -444,7 +485,7 @@ async function apiFetch(backend, path, query = {}) {
 
   try {
     const response = await fetch(url, {
-      method: "GET",
+      method,
       signal: controller.signal,
       headers
     })
