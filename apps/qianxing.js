@@ -1,5 +1,6 @@
 import plugin from "../../../lib/plugins/plugin.js"
 import config from "../config/index.js"
+import { optimizeTurtleSoup } from "../lib/turtle-soup-ai.js"
 
 const STARTUP_ACTIONS = [
   {
@@ -34,6 +35,7 @@ const API_METHODS = new Map([
   ["/queue", "GET"],
   ["/health", "GET"],
   ["/screenshot", "GET"],
+  ["/turtle-soup/questions", "POST"],
   ...STARTUP_ACTIONS.map((item) => [item.path, "POST"])
 ])
 const SELECTOR_TTL_MS = 60_000
@@ -105,7 +107,7 @@ export class qianxing extends plugin {
     const index = Number(messageText(e).trim()) - 1
     const backend = normalizedBackends()[index]
     if (!backend) {
-      await this.replyMessage(e, "选择无效，请重新发送 #千星启动原神、#千星进入千星 或 #千星截图")
+      await this.replyMessage(e, "选择无效，请重新发送原命令")
       return true
     }
 
@@ -120,7 +122,7 @@ export class qianxing extends plugin {
       await this.replyMessage(e, "未配置千星后端")
       return
     }
-    if (backends.length === 1 && parsed.action === "截图") {
+    if (backends.length === 1 && (parsed.action === "截图" || parsed.action === "提交海龟汤")) {
       await this.runSingle(e, backends[0], parsed)
       return
     }
@@ -158,6 +160,13 @@ export class qianxing extends plugin {
 
   async runSingle(e, backend, parsed) {
     try {
+      if (parsed.action === "提交海龟汤") {
+        await this.replyMessage(e, "正在整理并提交海龟汤")
+        const submission = await optimizeTurtleSoup(parsed.rawContent, config.turtleSoupAi)
+        const receipt = await apiJson(backend, "/turtle-soup/questions", {}, { json: submission })
+        await this.replyMessage(e, `${backend.name}：已保存 ${receipt.id}（第 ${receipt.position} 题）`)
+        return
+      }
       if (parsed.action === "截图") {
         const image = await requestScreenshot(backend)
         await this.replyMessage(e, [`${backend.name} 截图：`, image])
@@ -165,6 +174,10 @@ export class qianxing extends plugin {
       }
       await this.replyMessage(e, await runAction(backend, parsed))
     } catch (error) {
+      if (parsed.action === "提交海龟汤") {
+        await this.replyMessage(e, `${backend.name}：海龟汤提交失败：${error.message || "未知错误"}`)
+        return
+      }
       await this.replyMessage(e, formatActionError(backend, error))
     }
   }
@@ -182,10 +195,13 @@ function action(name, aliases) {
 }
 
 function isSelectorAction(actionName) {
-  return actionName === "截图" || Boolean(findStartupAction(actionName))
+  return actionName === "截图" || actionName === "提交海龟汤" || Boolean(findStartupAction(actionName))
 }
 
 function selectorInstruction(actionName) {
+  if (actionName === "提交海龟汤") {
+    return "提交到对应题库"
+  }
   return findStartupAction(actionName)?.instruction || "获取对应截图"
 }
 
@@ -204,6 +220,11 @@ function parseCommand(message) {
     return { action: "状态", backendKey: "" }
   }
 
+  const submission = parseTurtleSoupSubmission(rest)
+  if (submission) {
+    return submission
+  }
+
   const direct = matchActionAtStart(rest)
   if (direct) {
     return direct
@@ -219,6 +240,20 @@ function parseCommand(message) {
   }
 
   return null
+}
+
+function parseTurtleSoupSubmission(text) {
+  const marker = "海龟汤"
+  const markerIndex = text.indexOf(marker)
+  if (markerIndex < 0) {
+    return null
+  }
+  const backendKey = text.slice(0, markerIndex).trim()
+  const rawContent = text.slice(markerIndex + marker.length).trim()
+  if (!rawContent) {
+    return null
+  }
+  return { action: "提交海龟汤", backendKey, rawContent }
 }
 
 function matchActionAtStart(text) {
@@ -291,6 +326,7 @@ function formatHelp() {
     "千星点歌监控命令：",
     "#千星状态 / #千星监控 / #千星队列 / #千星健康",
     "#千星启动原神 / #千星进入千星 / #千星截图 / #千星列表",
+    "提交海龟汤：#千星海龟汤 <原始内容>",
     "指定后端：#千星A状态、#千星A启动原神、#千星A进入千星、#千星A截图"
   ].join("\n")
 }
@@ -450,20 +486,20 @@ async function requestScreenshot(backend) {
   return segment.image(buffer)
 }
 
-async function apiJson(backend, path) {
-  const text = await apiText(backend, path)
+async function apiJson(backend, path, query = {}, options = {}) {
+  const text = await apiText(backend, path, query, options)
   if (!text) {
     return {}
   }
   return JSON.parse(text)
 }
 
-async function apiText(backend, path) {
-  const response = await apiFetch(backend, path)
+async function apiText(backend, path, query = {}, options = {}) {
+  const response = await apiFetch(backend, path, query, options)
   return response.text()
 }
 
-async function apiFetch(backend, path, query = {}) {
+async function apiFetch(backend, path, query = {}, options = {}) {
   const method = API_METHODS.get(path)
   if (!method) {
     throw new Error(`Blocked unsupported API path: ${path}`)
@@ -482,12 +518,18 @@ async function apiFetch(backend, path, query = {}) {
   if (backend.accessToken) {
     headers["X-Miliastra-Token"] = backend.accessToken
   }
+  let body
+  if (options.json !== undefined) {
+    headers["Content-Type"] = "application/json"
+    body = JSON.stringify(options.json)
+  }
 
   try {
     const response = await fetch(url, {
       method,
       signal: controller.signal,
-      headers
+      headers,
+      body
     })
     if (!response.ok) {
       const body = await response.text().catch(() => "")

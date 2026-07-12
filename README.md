@@ -30,6 +30,14 @@ export default {
   queuePreviewLimit: 5,
   screenshotQuality: 88,
   accessToken: "",
+  turtleSoupAi: {
+    enabled: true,
+    endpoint: "https://api.deepseek.com/chat/completions",
+    apiKey: "你的 API Key",
+    model: "deepseek-chat",
+    timeoutMs: 30000,
+    maxTokens: 1200
+  },
   backends: [
     {
       key: "A",
@@ -74,15 +82,18 @@ cp /tmp/miliastra-music-config.js config/config.js
 #千星启动原神
 #千星进入千星
 #千星截图
+#千星海龟汤 标题、汤面和汤底原始内容
 #千星列表
 #千星帮助
 ```
 
 `#千星状态` 会同时请求所有后端并合并状态和队列。
 
+`#千星海龟汤 <原始内容>` 会先用插件配置的 OpenAI 兼容 AI 整理标题、汤面、汤底和裁决备注，再选择一个后端串行保存。主程序只接收整理后的结构化内容，不执行 AI 优化；未启用或未完整配置 `turtleSoupAi` 时提交会被拒绝。
+
 `#千星监控` 会读取播放控制器、音乐队列、待执行任务和聊天监听状态。`#千星启动原神` 和 `#千星进入千星` 始终会先显示后端状态，并要求回复数字确认一个后端；`#千星截图` 仅在配置多个后端时要求选择。
 
-插件仅允许只读访问 `/status`、`/monitor`、`/queue`、`/health` 和 `/screenshot`。`/startup/game` 和 `/startup/enter-wonderland` 是仅有的两个 `POST` 特殊接口，其他会影响游戏的接口全部被插件拒绝。
+插件仅允许只读访问 `/status`、`/monitor`、`/queue`、`/health` 和 `/screenshot`。写接口白名单只有 `/startup/game`、`/startup/enter-wonderland` 和结构化题目提交 `/turtle-soup/questions`，其他会影响游戏的接口全部被插件拒绝。
 
 指定后端时：
 
@@ -94,6 +105,7 @@ cp /tmp/miliastra-music-config.js config/config.js
 #千星A启动原神
 #千星A进入千星
 #千星A截图
+#千星A海龟汤 标题、汤面和汤底原始内容
 ```
 
 这些命令只请求 A 后端。

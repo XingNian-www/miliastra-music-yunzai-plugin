@@ -7,6 +7,9 @@
   "type": "module",
   "main": "index.js",
   "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
   "engines": {
     "node": ">=18"
   }

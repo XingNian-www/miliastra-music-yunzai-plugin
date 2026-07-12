@@ -3,6 +3,14 @@ export default {
   queuePreviewLimit: 5,
   screenshotQuality: 88,
   accessToken: "",
+  turtleSoupAi: {
+    enabled: false,
+    endpoint: "https://api.deepseek.com/chat/completions",
+    apiKey: "",
+    model: "deepseek-chat",
+    timeoutMs: 30000,
+    maxTokens: 1200
+  },
   backends: [
     {
       key: "A",
