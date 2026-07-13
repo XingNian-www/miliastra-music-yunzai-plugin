@@ -7,9 +7,14 @@ import { pathToFileURL } from "node:url"
 
 import {
   loadManagedConfig,
-  prepareManagedConfig
+  prepareManagedConfig,
+  reloadManagedConfig
 } from "../config/manager.js"
 import defaultConfig from "../config/default.js"
+import {
+  DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT,
+  LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2
+} from "../lib/turtle-soup-prompt.js"
 
 const defaults = {
   configVersion: 1,
@@ -119,6 +124,53 @@ test("adds proxyUrl to an existing current config without changing AI secrets", 
   assert.equal(plan.shouldWrite, true)
   assert.equal(plan.config.turtleSoupAi.proxyUrl, "")
   assert.equal(plan.config.turtleSoupAi.apiKey, "keep-secret")
+})
+
+test("reloads config in place and keeps the current config when reloading fails", async (t) => {
+  const directory = await temporaryDirectory(t)
+  const configPath = path.join(directory, "config.js")
+  const configUrl = pathToFileURL(configPath)
+  const activeConfig = structuredClone(defaults)
+  activeConfig.requestTimeoutMs = 1000
+  activeConfig.runtimeOnly = "remove-me"
+  await writeFile(configPath, `export default {
+  configVersion: 1,
+  requestTimeoutMs: 9000,
+  accessToken: "new-secret",
+  nested: { enabled: true, apiKey: "ai-secret" },
+  backends: []
+}\n`, "utf8")
+
+  const result = await reloadManagedConfig(activeConfig, defaults, configUrl, {
+    log: () => {}
+  })
+
+  assert.equal(result, activeConfig)
+  assert.equal(activeConfig.requestTimeoutMs, 9000)
+  assert.equal(activeConfig.accessToken, "new-secret")
+  assert.equal(Object.hasOwn(activeConfig, "runtimeOnly"), false)
+
+  const snapshot = structuredClone(activeConfig)
+  await writeFile(configPath, "export default { broken\n", "utf8")
+  await assert.rejects(
+    reloadManagedConfig(activeConfig, defaults, configUrl, { log: () => {} }),
+    /无法加载本地配置/
+  )
+  assert.deepEqual(activeConfig, snapshot)
+})
+
+test("migrates only the old default prompt from v2 to v3", () => {
+  const oldDefaultConfig = structuredClone(defaultConfig)
+  oldDefaultConfig.configVersion = 2
+  oldDefaultConfig.turtleSoupAi.systemPrompt = LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2
+
+  const migrated = prepareManagedConfig(defaultConfig, oldDefaultConfig)
+  assert.equal(migrated.config.configVersion, 3)
+  assert.equal(migrated.config.turtleSoupAi.systemPrompt, DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT)
+
+  oldDefaultConfig.turtleSoupAi.systemPrompt = "我的自定义提示词"
+  const customized = prepareManagedConfig(defaultConfig, oldDefaultConfig)
+  assert.equal(customized.config.turtleSoupAi.systemPrompt, "我的自定义提示词")
 })
 
 test("rejects invalid config modules without overwriting them", async (t) => {

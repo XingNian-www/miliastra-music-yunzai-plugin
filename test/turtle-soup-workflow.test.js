@@ -13,7 +13,8 @@ const draft = {
   title: "灯塔",
   surface: "男人关灯后，远处发生了事故。",
   bottom: "男人是灯塔管理员。",
-  adjudicationNotes: "核心真相：灯是灯塔。主持裁决：灯是普通灯吗？=否（这是灯塔。）。"
+  adjudicationNotes: "核心真相：灯是灯塔。主持裁决：灯是普通灯吗？=否（这是灯塔。）。",
+  logicReview: "未发现明显逻辑漏洞。"
 }
 
 test("creates a ten-minute preview only after AI editing succeeds", async () => {

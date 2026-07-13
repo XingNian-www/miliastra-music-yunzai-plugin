@@ -1,5 +1,5 @@
 import plugin from "../../../lib/plugins/plugin.js"
-import config from "../config/index.js"
+import config, { reloadConfig } from "../config/index.js"
 import {
   createCommandParser,
   extractTurtleSoupPreferences,
@@ -53,6 +53,7 @@ const READ_ACTIONS = [
 const ACTIONS = [
   action("帮助", ["帮助", "help"]),
   action("列表", ["列表", "后端"]),
+  action("重载配置", ["重载配置", "reload"]),
   ...READ_ACTIONS,
   ...STARTUP_ACTIONS.map((item) => action(item.name, [item.name])),
   action("截图", ["截图"])
@@ -132,6 +133,11 @@ export class qianxing extends plugin {
 
     if (parsed.action === "列表") {
       await this.replyMessage(e, formatBackendList())
+      return true
+    }
+
+    if (parsed.action === "重载配置") {
+      await this.reloadRuntimeConfig(e)
       return true
     }
 
@@ -328,6 +334,16 @@ export class qianxing extends plugin {
     }
   }
 
+  async reloadRuntimeConfig(e) {
+    try {
+      await reloadConfig()
+      pendingSelections.clear()
+      await this.replyMessage(e, "千星插件配置已重载")
+    } catch (error) {
+      await this.replyMessage(e, `千星插件配置重载失败：${error?.message || "未知错误"}`)
+    }
+  }
+
   async replyMessage(e, message) {
     if (e?.reply) {
       return e.reply(message)
@@ -409,7 +425,7 @@ function formatHelp() {
     "千星点歌监控命令：",
     "#千星状态 / #千星监控 / #千星队列 / #千星健康",
     "#千星海龟汤状态 / #千星卧底状态",
-    "#千星启动原神 / #千星进入千星 / #千星截图 / #千星列表",
+    "#千星启动原神 / #千星进入千星 / #千星截图 / #千星列表 / #千星重载配置",
     "私聊投稿：#千星海龟汤投稿 <原始内容>",
     "投稿操作：#千星确认投稿（此时选择后端）/ #千星调整投稿 <要求> / #千星取消投稿",
     "指定后端：#千星A状态、#千星A海龟汤状态、#千星A卧底状态、#千星A启动原神、#千星A进入千星、#千星A截图"

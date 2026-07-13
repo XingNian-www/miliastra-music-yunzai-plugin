@@ -22,7 +22,7 @@ TRSS-Yunzai 已自带 AI HTTP 代理所需的 `https-proxy-agent`。其他 Yunza
 
 ```js
 export default {
-  configVersion: 2,
+  configVersion: 3,
   requestTimeoutMs: 5000,
   queuePreviewLimit: 5,
   screenshotQuality: 88,
@@ -59,9 +59,13 @@ export default {
 
 `turtleSoupAi.endpoint` 是完整请求地址，可以改为代理或自建网关，但目标必须兼容 OpenAI Responses API 和 `text.format` 严格 JSON Schema。插件不会自动回退到 Chat Completions。默认提示词的可读版本位于 `lib/turtle-soup-prompt.js`，首次生成或迁移配置时会完整写入 `systemPrompt`，之后可在本地配置中覆盖。
 
+自定义 `systemPrompt` 时必须要求模型返回 `title`、`surface`、`bottom`、`adjudicationNotes` 和 `logicReview`。v3 会保留自定义提示词，不会自动改写其中的输出约定。
+
 `turtleSoupAi.proxyUrl` 只代理 AI 请求，不影响千星后端 API。留空表示直连；HTTP 代理示例为 `http://127.0.0.1:7890`，需要认证时可使用 `http://用户名:密码@代理地址:端口`。同时接受 HTTPS 代理地址，不支持 SOCKS。
 
 每次加载时，插件会检查 `configVersion`。升级后的默认配置存在新增字段时，插件会自动补入本地配置并原子写回；已有后端、地址、访问令牌、AI 密钥和未知扩展字段都会保留，每个自定义后端也会补齐新增的后端字段。配置版本高于当前插件时只读取、不降级或覆盖。
+
+修改 `config/config.js` 后发送 `#千星重载配置` 即可在不重启 Yunzai 的情况下生效。重载会先完整读取、校验并迁移新配置，再原地替换运行时配置；读取失败时会回复错误并继续使用上一次有效配置。
 
 本地配置按普通数据对象管理，只支持 `export default { ... }` 对象字面量。为避免迁移时执行代码或把环境变量密钥固化到文件，`process.env`、import、函数、getter 和其他运行逻辑会被拒绝。发生生成或迁移时会规范化写回，手写注释不保证保留。
 
@@ -69,9 +73,9 @@ export default {
 
 如果 Miliastra Wonderland Music 配置了 `http.access_token`，需要把同一个值填到对应后端的 `accessToken`。多个后端令牌相同也可以只填顶层 `accessToken`，后端未单独配置时会继承它。
 
-`key` 会用于命令里的后端选择，例如 `#千星A状态`。不要把后端 key 配成 `状态`、`监控`、`队列`、`健康`、`海龟汤状态`、`卧底状态`、`启动原神`、`进入千星`、`截图` 或 `列表`。
+`key` 会用于命令里的后端选择，例如 `#千星A状态`。不要把后端 key 配成 `状态`、`监控`、`队列`、`健康`、`海龟汤状态`、`卧底状态`、`启动原神`、`进入千星`、`截图`、`列表` 或 `重载配置`。
 
-旧版本没有 `configVersion` 的配置会被识别为 v0，并逐步迁移到当前版本。v1 升级到 v2 时，`maxTokens` 会迁移为 `maxOutputTokens`，废弃的 AI `enabled` 字段会移除。未配置密钥且仍使用旧版默认 DeepSeek 地址时会更新为 OpenAI 默认值；已经配置密钥或自定义地址时会原样保留，避免把第三方密钥发送到其他服务。保留下来的端点如果只支持 Chat Completions，需要手动改为兼容 Responses API 的地址。
+旧版本没有 `configVersion` 的配置会被识别为 v0，并逐步迁移到当前版本。v1 升级到 v2 时，`maxTokens` 会迁移为 `maxOutputTokens`，废弃的 AI `enabled` 字段会移除。未配置密钥且仍使用旧版默认 DeepSeek 地址时会更新为 OpenAI 默认值；已经配置密钥或自定义地址时会原样保留，避免把第三方密钥发送到其他服务。v2 升级到 v3 时只会把旧版默认系统提示词换为新的保守审稿提示词，用户自定义提示词保持不变。保留下来的端点如果只支持 Chat Completions，需要手动改为兼容 Responses API 的地址。
 
 ## 命令
 
@@ -88,6 +92,7 @@ export default {
 #千星进入千星
 #千星截图
 #千星列表
+#千星重载配置
 #千星帮助
 ```
 
@@ -121,7 +126,11 @@ export default {
 风格：现实因果
 ```
 
-首次投稿不会选择或请求千星后端。插件先通过配置的 OpenAI Responses API 完成 AI 审查，生成标题、汤面、汤底和完整裁决备注，只向投稿者显示预览，不立即写入题库。预览不会显示 `enabled`，最终提交固定使用 `enabled: true`。投稿命令不支持预先指定后端。
+首次投稿不会选择或请求千星后端。插件先通过配置的 OpenAI Responses API 完成 AI 审查，提取标题、汤面和汤底，重点生成完整裁决备注，并单独显示潜在逻辑漏洞。默认审查不会为了修补漏洞而改写投稿者的汤面或汤底；漏洞只在预览的“逻辑审查”中报告，不写入题库。
+
+调整阶段除提示注入外会无条件执行投稿者的最新修改要求，即使修改可能降低题目质量，也只会在逻辑审查中提醒。未要求修改汤底时保持原文；明确要求修改汤底时，在满足要求后尽量控制在 240 个中文字符以内。要求忽略系统规则、泄露提示词、调用工具、输出无关内容或把审稿功能当作通用 AI 使用的内容会被视为提示注入而不执行。
+
+预览不会显示 `enabled`，最终提交固定使用 `enabled: true`。投稿命令不支持预先指定后端。
 
 预览操作：
 

@@ -6,10 +6,12 @@ import { isDeepStrictEqual } from "node:util"
 import { fileURLToPath } from "node:url"
 
 import { parseConfigModule } from "./data-parser.js"
+import { LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2 } from "../lib/turtle-soup-prompt.js"
 
 const MIGRATIONS = new Map([
   [1, (config) => config],
-  [2, migrateToResponsesApi]
+  [2, migrateToResponsesApi],
+  [3, migrateToConservativeReviewPrompt]
 ])
 const BACKEND_IDENTITY_FIELDS = new Set(["key", "name", "baseUrl"])
 const LEGACY_AI_ENDPOINT = "https://api.deepseek.com/chat/completions"
@@ -33,6 +35,18 @@ export async function loadManagedConfig(defaultConfig, userConfigUrl, options = 
   }
 
   return plan.config
+}
+
+export async function reloadManagedConfig(target, defaultConfig, userConfigUrl, options = {}) {
+  if (!isPlainObject(target)) {
+    throw new TypeError("运行时配置必须是对象")
+  }
+  const nextConfig = await loadManagedConfig(defaultConfig, userConfigUrl, options)
+  for (const key of Object.keys(target)) {
+    delete target[key]
+  }
+  Object.assign(target, nextConfig)
+  return target
 }
 
 export function prepareManagedConfig(defaultConfig, userConfig) {
@@ -101,6 +115,15 @@ function migrateToResponsesApi(config, defaultConfig) {
   }
   delete ai.maxTokens
   delete ai.enabled
+  return migrated
+}
+
+function migrateToConservativeReviewPrompt(config, defaultConfig) {
+  const migrated = cloneValue(config)
+  const ai = migrated.turtleSoupAi
+  if (isPlainObject(ai) && ai.systemPrompt === LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2) {
+    ai.systemPrompt = defaultConfig.turtleSoupAi?.systemPrompt
+  }
   return migrated
 }
 

@@ -9,8 +9,16 @@ import {
 
 const parseCommand = createCommandParser([
   { name: "状态", aliases: ["状态"] },
+  { name: "重载配置", aliases: ["重载配置", "reload"] },
   { name: "海龟汤状态", aliases: ["海龟汤状态", "海龟汤监控"] }
 ], (key) => key === "A")
+
+test("parses the runtime config reload command", () => {
+  assert.deepEqual(parseCommand("#千星重载配置"), {
+    action: "重载配置",
+    backendKey: ""
+  })
+})
 
 test("keeps turtle soup status commands separate from submissions", () => {
   assert.deepEqual(parseCommand("#千星海龟汤状态"), {

@@ -12,6 +12,7 @@ const draft = {
   surface: "汤面",
   bottom: "汤底",
   adjudicationNotes: "裁决",
+  logicReview: "1. [一般] 存在另一个同样合理的解释。",
   enabled: false,
   id: "must-not-be-sent"
 }
@@ -50,6 +51,7 @@ test("adds the contributor to the surface only when building the final JSON", as
   })
 
   assert.equal(requestBody.surface, "此题由投稿者提供:汤面")
+  assert.equal(Object.hasOwn(requestBody, "logicReview"), false)
   assert.equal(draft.surface, "汤面")
 })
 

@@ -11,7 +11,8 @@ const draft = {
   title: "灯塔",
   surface: "男人关灯后，远处发生了事故。",
   bottom: "男人是灯塔管理员。",
-  adjudicationNotes: "核心真相：灯是灯塔。主持裁决：灯是普通灯吗？=否（这是灯塔。）。"
+  adjudicationNotes: "核心真相：灯是灯塔。主持裁决：灯是普通灯吗？=否（这是灯塔。）。",
+  logicReview: "1. [一般] 汤面不足以排除普通停电；会产生竞争答案；建议作者补充可追问线索。"
 }
 
 test("formats a complete private preview without exposing enabled state", () => {
@@ -26,6 +27,7 @@ test("formats a complete private preview without exposing enabled state", () => 
   assert.match(message, /汤面：\n男人关灯后/)
   assert.match(message, /汤底：\n男人是灯塔管理员/)
   assert.match(message, /裁决备注：\n核心真相/)
+  assert.match(message, /逻辑审查：\n1\. \[一般\]/)
   assert.match(message, /调整次数：2\/10/)
   assert.match(message, /#千星确认投稿/)
   assert.match(message, /#千星调整投稿/)

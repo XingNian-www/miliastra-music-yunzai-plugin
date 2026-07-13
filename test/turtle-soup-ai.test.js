@@ -14,7 +14,8 @@ const completeDraft = {
   title: "灯塔",
   surface: "男人关灯后，远处发生了事故。",
   bottom: "男人是灯塔管理员，关闭的是指引船只的灯。",
-  adjudicationNotes: "核心真相：男人关闭灯塔导致船只失去指引。主持裁决：灯是普通房间灯吗？=否（灯是灯塔的航标灯。）。"
+  adjudicationNotes: "核心真相：男人关闭灯塔导致船只失去指引。主持裁决：灯是普通房间灯吗？=否（灯是灯塔的航标灯。）。",
+  logicReview: "未发现明显逻辑漏洞。"
 }
 
 test("normalizes a complete structured draft without submission-only fields", () => {
@@ -23,13 +24,15 @@ test("normalizes a complete structured draft without submission-only fields", ()
       title: " 灯塔 ",
       surface: " 汤面 ",
       bottom: " 汤底 ",
-      adjudicationNotes: " 裁决 "
+      adjudicationNotes: " 裁决 ",
+      logicReview: " 未发现明显逻辑漏洞。 "
     }),
     {
       title: "灯塔",
       surface: "汤面",
       bottom: "汤底",
-      adjudicationNotes: "裁决"
+      adjudicationNotes: "裁决",
+      logicReview: "未发现明显逻辑漏洞。"
     }
   )
 })
@@ -37,7 +40,7 @@ test("normalizes a complete structured draft without submission-only fields", ()
 test("rejects output missing required puzzle content", () => {
   assert.throws(
     () => validateTurtleSoupDraft({ title: "标题", surface: "汤面", bottom: "汤底" }),
-    /缺少标题、汤面、汤底或裁决备注/
+    /缺少标题、汤面、汤底、裁决备注或逻辑审查/
   )
 })
 
@@ -98,7 +101,8 @@ test("optimizes through the Responses API with strict structured output", async 
     "title",
     "surface",
     "bottom",
-    "adjudicationNotes"
+    "adjudicationNotes",
+    "logicReview"
   ])
   assert.equal(body.text.format.schema.additionalProperties, false)
   assert.equal(body.max_output_tokens, 16384)

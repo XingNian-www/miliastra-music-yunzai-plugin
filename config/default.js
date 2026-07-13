@@ -1,7 +1,7 @@
 import { DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT } from "../lib/turtle-soup-prompt.js"
 
 export default {
-  configVersion: 2,
+  configVersion: 3,
   requestTimeoutMs: 5000,
   queuePreviewLimit: 5,
   screenshotQuality: 88,
