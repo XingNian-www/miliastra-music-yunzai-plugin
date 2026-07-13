@@ -3,7 +3,8 @@ import assert from "node:assert/strict"
 
 import {
   conversationKey,
-  isPrivateMessage
+  isPrivateMessage,
+  senderDisplayName
 } from "../lib/message-context.js"
 
 test("recognizes private messages across Yunzai and TRSS event shapes", () => {
@@ -38,4 +39,14 @@ test("isolates pending state by adapter, bot, conversation, and user", () => {
     message_type: "group",
     group_id: "456"
   }))
+})
+
+test("uses the Yunzai sender card or nickname for submission attribution", () => {
+  assert.equal(senderDisplayName({
+    sender: { card: "  投稿 人  ", nickname: "昵称" },
+    user_id: 123
+  }), "投稿 人")
+  assert.equal(senderDisplayName({ sender: { nickname: "昵称" }, user_id: 123 }), "昵称")
+  assert.equal(senderDisplayName({ nickname: "事件昵称", user_id: 123 }), "事件昵称")
+  assert.equal(senderDisplayName({ user_id: 123 }), "123")
 })

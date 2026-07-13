@@ -8,6 +8,7 @@ export default {
   accessToken: "",
   turtleSoupAi: {
     endpoint: "https://api.openai.com/v1/responses",
+    proxyUrl: "",
     apiKey: "",
     model: "gpt-5.6",
     reasoningEffort: "medium",

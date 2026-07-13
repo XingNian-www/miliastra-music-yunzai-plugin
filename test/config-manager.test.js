@@ -9,6 +9,7 @@ import {
   loadManagedConfig,
   prepareManagedConfig
 } from "../config/manager.js"
+import defaultConfig from "../config/default.js"
 
 const defaults = {
   configVersion: 1,
@@ -106,6 +107,18 @@ test("does not rewrite complete current or future-version configs", () => {
   assert.equal(futurePlan.shouldWrite, false)
   assert.equal(futurePlan.config.configVersion, 9)
   assert.equal(futurePlan.config.requestTimeoutMs, 1234)
+})
+
+test("adds proxyUrl to an existing current config without changing AI secrets", () => {
+  const localConfig = structuredClone(defaultConfig)
+  localConfig.turtleSoupAi.apiKey = "keep-secret"
+  delete localConfig.turtleSoupAi.proxyUrl
+
+  const plan = prepareManagedConfig(defaultConfig, localConfig)
+
+  assert.equal(plan.shouldWrite, true)
+  assert.equal(plan.config.turtleSoupAi.proxyUrl, "")
+  assert.equal(plan.config.turtleSoupAi.apiKey, "keep-secret")
 })
 
 test("rejects invalid config modules without overwriting them", async (t) => {

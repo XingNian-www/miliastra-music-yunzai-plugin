@@ -7,6 +7,7 @@ test("defaults turtle soup editing to GPT-5.6 Responses API settings", () => {
   assert.equal(defaultConfig.configVersion, 2)
   assert.deepEqual({
     endpoint: defaultConfig.turtleSoupAi.endpoint,
+    proxyUrl: defaultConfig.turtleSoupAi.proxyUrl,
     model: defaultConfig.turtleSoupAi.model,
     reasoningEffort: defaultConfig.turtleSoupAi.reasoningEffort,
     verbosity: defaultConfig.turtleSoupAi.verbosity,
@@ -14,6 +15,7 @@ test("defaults turtle soup editing to GPT-5.6 Responses API settings", () => {
     timeoutMs: defaultConfig.turtleSoupAi.timeoutMs
   }, {
     endpoint: "https://api.openai.com/v1/responses",
+    proxyUrl: "",
     model: "gpt-5.6",
     reasoningEffort: "medium",
     verbosity: "high",

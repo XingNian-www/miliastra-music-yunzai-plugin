@@ -38,6 +38,21 @@ test("submits only accepted fields and forces enabled true", async () => {
   assert.deepEqual(receipt, { id: "soup-0001", position: 1, total: 1 })
 })
 
+test("adds the contributor to the surface only when building the final JSON", async () => {
+  let requestBody
+  await submitTurtleSoupQuestion(backend, draft, {
+    contributorName: "投稿者",
+    timeoutMs: 1000,
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body)
+      return responseJson({ id: "soup-0002", position: 2, total: 2 })
+    }
+  })
+
+  assert.equal(requestBody.surface, "此题由投稿者提供:汤面")
+  assert.equal(draft.surface, "汤面")
+})
+
 test("retries one non-successful response before returning success", async () => {
   let attempts = 0
   const receipt = await submitTurtleSoupQuestion(backend, draft, {

@@ -28,7 +28,6 @@ test("creates a ten-minute preview only after AI editing succeeds", async () => 
   })
 
   const preview = await workflow.start("private:123", {
-    backend,
     rawContent: "原始初稿",
     difficulty: "高",
     style: "现实"
@@ -40,11 +39,10 @@ test("creates a ten-minute preview only after AI editing succeeds", async () => 
     style: "现实"
   })
   assert.deepEqual(preview, {
-    backendKey: "A",
-    backendName: "1号千星",
     draft,
     adjustmentCount: 0,
     remainingAdjustments: 10,
+    revision: 1,
     expiresAt: 601000
   })
   assert.deepEqual(workflow.getPreview("private:123"), preview)
@@ -64,7 +62,6 @@ test("adjusts from the original and current drafts, then refreshes the preview",
     submit: async () => assert.fail("should not submit before confirmation")
   })
   await workflow.start("private:123", {
-    backend,
     rawContent: "原始初稿",
     difficulty: "高",
     style: "现实"
@@ -83,6 +80,7 @@ test("adjusts from the original and current drafts, then refreshes the preview",
   assert.equal(preview.draft.surface, "更短的汤面。")
   assert.equal(preview.adjustmentCount, 1)
   assert.equal(preview.remainingAdjustments, 9)
+  assert.equal(preview.revision, 2)
   assert.equal(preview.expiresAt, 605000)
 })
 
@@ -99,7 +97,7 @@ test("keeps the current preview when an adjustment fails", async () => {
     },
     submit: async () => assert.fail("should not submit before confirmation")
   })
-  const initial = await workflow.start("private:123", { backend, rawContent: "初稿" })
+  const initial = await workflow.start("private:123", { rawContent: "初稿" })
 
   await assert.rejects(workflow.adjust("private:123", "修改"), /AI unavailable/)
 
@@ -113,7 +111,7 @@ test("limits each draft to ten successful adjustments", async () => {
     optimize: async () => draft,
     submit: async () => assert.fail("should not submit before confirmation")
   })
-  await workflow.start("private:123", { backend, rawContent: "初稿" })
+  await workflow.start("private:123", { rawContent: "初稿" })
   await workflow.adjust("private:123", "第一次")
   await workflow.adjust("private:123", "第二次")
 
@@ -128,18 +126,21 @@ test("submits the selected backend only after confirmation and clears the previe
   const workflow = new TurtleSoupSubmissionWorkflow({
     now: () => 1000,
     optimize: async () => draft,
-    submit: async (selectedBackend, selectedDraft) => {
-      submitted = { selectedBackend, selectedDraft }
+    submit: async (selectedBackend, selectedDraft, submission) => {
+      submitted = { selectedBackend, selectedDraft, submission }
       return { id: "soup-0001", position: 1, total: 1 }
     }
   })
-  await workflow.start("private:123", { backend, rawContent: "初稿" })
+  await workflow.start("private:123", { rawContent: "初稿" })
 
-  const result = await workflow.confirm("private:123")
+  const result = await workflow.confirm("private:123", backend, {
+    contributorName: "投稿者"
+  })
 
   assert.deepEqual(submitted, {
     selectedBackend: backend,
-    selectedDraft: draft
+    selectedDraft: draft,
+    submission: { contributorName: "投稿者" }
   })
   assert.deepEqual(result, {
     backendKey: "A",
@@ -157,9 +158,9 @@ test("keeps the original preview expiry when confirmation fails", async () => {
       throw new Error("后端不可用")
     }
   })
-  const initial = await workflow.start("private:123", { backend, rawContent: "初稿" })
+  const initial = await workflow.start("private:123", { rawContent: "初稿" })
 
-  await assert.rejects(workflow.confirm("private:123"), /后端不可用/)
+  await assert.rejects(workflow.confirm("private:123", backend), /后端不可用/)
 
   assert.deepEqual(workflow.getPreview("private:123"), initial)
 })
@@ -170,7 +171,7 @@ test("cancels an active preview", async () => {
     optimize: async () => draft,
     submit: async () => assert.fail("cancel must not submit")
   })
-  await workflow.start("private:123", { backend, rawContent: "初稿" })
+  await workflow.start("private:123", { rawContent: "初稿" })
 
   assert.equal(workflow.cancel("private:123"), true)
   assert.equal(workflow.getPreview("private:123"), null)
@@ -189,12 +190,12 @@ test("rejects concurrent operations without deleting the current preview", async
       rejectSubmission = reject
     })
   })
-  const initial = await workflow.start("private:123", { backend, rawContent: "初稿" })
-  const confirmation = workflow.confirm("private:123")
+  const initial = await workflow.start("private:123", { rawContent: "初稿" })
+  const confirmation = workflow.confirm("private:123", backend)
   await Promise.resolve()
 
   await assert.rejects(
-    workflow.start("private:123", { backend, rawContent: "新初稿" }),
+    workflow.start("private:123", { rawContent: "新初稿" }),
     (error) => error.code === "busy"
   )
   await assert.rejects(
@@ -202,7 +203,7 @@ test("rejects concurrent operations without deleting the current preview", async
     (error) => error.code === "busy"
   )
   await assert.rejects(
-    workflow.confirm("private:123"),
+    workflow.confirm("private:123", backend),
     (error) => error.code === "busy"
   )
   assert.throws(
@@ -222,11 +223,11 @@ test("rejects confirmation after the preview expires", async () => {
     optimize: async () => draft,
     submit: async () => assert.fail("expired preview must not submit")
   })
-  await workflow.start("private:123", { backend, rawContent: "初稿" })
+  await workflow.start("private:123", { rawContent: "初稿" })
   now = 601001
 
   await assert.rejects(
-    workflow.confirm("private:123"),
+    workflow.confirm("private:123", backend),
     (error) => error.code === "expired"
   )
   assert.equal(workflow.getPreview("private:123"), null)
@@ -245,11 +246,27 @@ test("a failed new submission replaces the previous preview", async () => {
     },
     submit: async () => assert.fail("should not submit")
   })
-  await workflow.start("private:123", { backend, rawContent: "旧初稿" })
+  await workflow.start("private:123", { rawContent: "旧初稿" })
 
   await assert.rejects(
-    workflow.start("private:123", { backend, rawContent: "新初稿" }),
+    workflow.start("private:123", { rawContent: "新初稿" }),
     /AI 失败/
   )
   assert.equal(workflow.getPreview("private:123"), null)
+})
+
+test("requires a valid backend only when confirmation begins", async () => {
+  const workflow = new TurtleSoupSubmissionWorkflow({
+    now: () => 1000,
+    optimize: async () => draft,
+    submit: async () => assert.fail("invalid backend must not submit")
+  })
+  const initial = await workflow.start("private:123", { rawContent: "初稿" })
+
+  await assert.rejects(
+    workflow.confirm("private:123"),
+    /千星后端配置无效/
+  )
+
+  assert.deepEqual(workflow.getPreview("private:123"), initial)
 })

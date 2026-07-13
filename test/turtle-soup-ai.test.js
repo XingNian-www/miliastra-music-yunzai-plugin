@@ -1,5 +1,8 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { once } from "node:events"
+import { createServer, request as httpRequest } from "node:http"
+import { connect } from "node:net"
 
 import {
   buildTurtleSoupInput,
@@ -101,7 +104,121 @@ test("optimizes through the Responses API with strict structured output", async 
   assert.equal(body.max_output_tokens, 16384)
   assert.equal(body.store, false)
   assert.equal(Object.hasOwn(body, "temperature"), false)
+  assert.equal(Object.hasOwn(request.options, "agent"), false)
   assert.deepEqual(result, completeDraft)
+})
+
+test("routes only AI requests through the configured HTTP proxy", async () => {
+  let request
+  let proxyUrl
+  let destroyed = false
+  const proxyAgent = {
+    destroy() {
+      destroyed = true
+    }
+  }
+  const proxyFetchImpl = async (endpoint, options) => {
+    request = { endpoint, options }
+    return responseJson({
+      status: "completed",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: JSON.stringify(completeDraft) }]
+      }]
+    })
+  }
+  const result = await optimizeTurtleSoup({ rawContent: "初稿" }, {
+    ...aiConfig(),
+    proxyUrl: "http://127.0.0.1:7890"
+  }, undefined, {
+    proxyFetchImpl,
+    createProxyAgent: async (value) => {
+      proxyUrl = value
+      return proxyAgent
+    }
+  })
+
+  assert.equal(proxyUrl, "http://127.0.0.1:7890/")
+  assert.equal(request.options.agent, proxyAgent)
+  assert.equal(destroyed, true)
+  assert.deepEqual(result, completeDraft)
+})
+
+test("uses the configured proxy even when TRSS provides global fetch", async (t) => {
+  const receivedBodies = []
+  const target = createServer((request, response) => {
+    const chunks = []
+    request.on("data", (chunk) => chunks.push(chunk))
+    request.on("end", () => {
+      receivedBodies.push(Buffer.concat(chunks).toString("utf8"))
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end(JSON.stringify({
+        status: "completed",
+        output: [{
+          type: "message",
+          content: [{ type: "output_text", text: JSON.stringify(completeDraft) }]
+        }]
+      }))
+    })
+  })
+  const targetPort = await listen(target)
+  let proxyHits = 0
+  const proxy = createServer((request, response) => {
+    proxyHits += 1
+    const targetUrl = new URL(request.url, `http://${request.headers.host}`)
+    const forwarded = httpRequest(targetUrl, {
+      method: request.method,
+      headers: request.headers
+    }, (targetResponse) => {
+      response.writeHead(targetResponse.statusCode || 500, targetResponse.headers)
+      targetResponse.pipe(response)
+    })
+    forwarded.on("error", (error) => response.destroy(error))
+    request.pipe(forwarded)
+  })
+  proxy.on("connect", (request, clientSocket, head) => {
+    proxyHits += 1
+    const [host, port] = request.url.split(":")
+    const targetSocket = connect(Number(port), host, () => {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n")
+      if (head.length) {
+        targetSocket.write(head)
+      }
+      targetSocket.pipe(clientSocket)
+      clientSocket.pipe(targetSocket)
+    })
+    targetSocket.on("error", (error) => clientSocket.destroy(error))
+    clientSocket.on("error", () => targetSocket.destroy())
+  })
+  const proxyPort = await listen(proxy)
+  t.after(async () => {
+    await Promise.all([closeServer(proxy), closeServer(target)])
+  })
+
+  const result = await optimizeTurtleSoup({ rawContent: "初稿" }, {
+    ...aiConfig(),
+    endpoint: `http://127.0.0.1:${targetPort}/v1/responses`,
+    proxyUrl: `http://127.0.0.1:${proxyPort}`
+  }, globalThis.fetch)
+
+  assert.ok(proxyHits > 0)
+  assert.equal(receivedBodies.length, 1)
+  assert.deepEqual(result, completeDraft)
+})
+
+test("rejects invalid AI proxy protocols before sending content", async () => {
+  let called = false
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, {
+      ...aiConfig(),
+      proxyUrl: "socks5://127.0.0.1:1080"
+    }, async () => {
+      called = true
+      return responseJson({})
+    }),
+    /proxyUrl 仅支持 http 或 https/
+  )
+  assert.equal(called, false)
 })
 
 test("rejects refusals and incomplete Responses API results", async () => {
@@ -141,9 +258,25 @@ test("rejects legacy Chat Completions endpoints before sending content", async (
   assert.equal(called, false)
 })
 
+test("rejects non-HTTP AI endpoints before sending content", async () => {
+  let called = false
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, {
+      ...aiConfig(),
+      endpoint: "file:///tmp/responses"
+    }, async () => {
+      called = true
+      return responseJson({})
+    }),
+    /endpoint 仅支持 http 或 https/
+  )
+  assert.equal(called, false)
+})
+
 function aiConfig() {
   return {
     endpoint: "https://api.openai.com/v1/responses",
+    proxyUrl: "",
     apiKey: "secret",
     model: "gpt-5.6",
     reasoningEffort: "medium",
@@ -165,4 +298,15 @@ function responseJson(payload, options = {}) {
       return JSON.stringify(payload)
     }
   }
+}
+
+async function listen(server) {
+  server.listen(0, "127.0.0.1")
+  await once(server, "listening")
+  return server.address().port
+}
+
+async function closeServer(server) {
+  server.close()
+  await once(server, "close")
 }

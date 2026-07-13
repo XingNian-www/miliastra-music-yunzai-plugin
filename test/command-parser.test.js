@@ -3,7 +3,8 @@ import assert from "node:assert/strict"
 
 import {
   createCommandParser,
-  extractTurtleSoupPreferences
+  extractTurtleSoupPreferences,
+  QIANXING_MESSAGE_RULE
 } from "../lib/command-parser.js"
 
 const parseCommand = createCommandParser([
@@ -28,11 +29,6 @@ test("parses turtle soup submissions even when content ends in an action alias",
     backendKey: "",
     rawContent: "标题状态"
   })
-  assert.deepEqual(parseCommand("#千星A海龟汤 标题状态"), {
-    action: "提交海龟汤",
-    backendKey: "A",
-    rawContent: "标题状态"
-  })
   assert.deepEqual(parseCommand("#千星海龟汤 投稿失败后，他离开了"), {
     action: "提交海龟汤",
     backendKey: "",
@@ -44,11 +40,6 @@ test("parses explicit submission, adjustment, confirmation, and cancellation com
   assert.deepEqual(parseCommand("#千星海龟汤投稿 标题和故事"), {
     action: "提交海龟汤",
     backendKey: "",
-    rawContent: "标题和故事"
-  })
-  assert.deepEqual(parseCommand("#千星A海龟汤投稿标题和故事"), {
-    action: "提交海龟汤",
-    backendKey: "A",
     rawContent: "标题和故事"
   })
   assert.deepEqual(parseCommand("#千星海龟汤投稿"), {
@@ -71,11 +62,35 @@ test("parses explicit submission, adjustment, confirmation, and cancellation com
   })
 })
 
+test("does not select a backend in the initial submission command", () => {
+  assert.equal(parseCommand("#千星A海龟汤投稿 标题和故事"), null)
+})
+
 test("extracts optional difficulty and style labels without changing the raw draft", () => {
   const rawContent = "标题：灯塔\n难度：高\n风格：现实因果\n汤面：男人关灯了"
   assert.deepEqual(extractTurtleSoupPreferences(rawContent), {
     rawContent,
     difficulty: "高",
     style: "现实因果"
+  })
+})
+
+test("Yunzai rule and parser accept a multiline turtle soup submission", () => {
+  const message = [
+    "#千星海龟汤投稿",
+    "标题：灯塔",
+    "汤面：男人关灯后，远处发生了事故。",
+    "汤底：男人是灯塔管理员。"
+  ].join("\n")
+
+  assert.equal(new RegExp(QIANXING_MESSAGE_RULE).test(message), true)
+  assert.deepEqual(parseCommand(message), {
+    action: "提交海龟汤",
+    backendKey: "",
+    rawContent: [
+      "标题：灯塔",
+      "汤面：男人关灯后，远处发生了事故。",
+      "汤底：男人是灯塔管理员。"
+    ].join("\n")
   })
 })

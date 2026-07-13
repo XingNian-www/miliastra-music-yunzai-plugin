@@ -16,13 +16,12 @@ const draft = {
 
 test("formats a complete private preview without exposing enabled state", () => {
   const message = formatTurtleSoupPreview({
-    backendName: "1号千星",
     draft,
     adjustmentCount: 2,
     remainingAdjustments: 8
   })
 
-  assert.match(message, /1号千星海龟汤投稿预览/)
+  assert.match(message, /^海龟汤投稿预览/)
   assert.match(message, /标题：灯塔/)
   assert.match(message, /汤面：\n男人关灯后/)
   assert.match(message, /汤底：\n男人是灯塔管理员/)
@@ -37,7 +36,6 @@ test("formats a complete private preview without exposing enabled state", () => 
 test("splits a complete long preview into sendable private messages", () => {
   const longNotes = "裁决内容。".repeat(1000)
   const messages = formatTurtleSoupPreviewMessages({
-    backendName: "很长的后端名称".repeat(100),
     draft: {
       ...draft,
       title: "很长的标题".repeat(200),
