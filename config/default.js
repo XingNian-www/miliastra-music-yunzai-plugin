@@ -1,16 +1,20 @@
+import { DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT } from "../lib/turtle-soup-prompt.js"
+
 export default {
-  configVersion: 1,
+  configVersion: 2,
   requestTimeoutMs: 5000,
   queuePreviewLimit: 5,
   screenshotQuality: 88,
   accessToken: "",
   turtleSoupAi: {
-    enabled: false,
-    endpoint: "https://api.deepseek.com/chat/completions",
+    endpoint: "https://api.openai.com/v1/responses",
     apiKey: "",
-    model: "deepseek-chat",
-    timeoutMs: 30000,
-    maxTokens: 1200
+    model: "gpt-5.6",
+    reasoningEffort: "medium",
+    verbosity: "high",
+    maxOutputTokens: 16384,
+    timeoutMs: 180000,
+    systemPrompt: DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT
   },
   backends: [
     {

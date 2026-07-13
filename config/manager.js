@@ -8,9 +8,12 @@ import { fileURLToPath } from "node:url"
 import { parseConfigModule } from "./data-parser.js"
 
 const MIGRATIONS = new Map([
-  [1, (config) => config]
+  [1, (config) => config],
+  [2, migrateToResponsesApi]
 ])
 const BACKEND_IDENTITY_FIELDS = new Set(["key", "name", "baseUrl"])
+const LEGACY_AI_ENDPOINT = "https://api.deepseek.com/chat/completions"
+const LEGACY_AI_MODEL = "deepseek-chat"
 
 export async function loadManagedConfig(defaultConfig, userConfigUrl, options = {}) {
   const exists = existsSync(userConfigUrl)
@@ -63,7 +66,7 @@ export function prepareManagedConfig(defaultConfig, userConfig) {
     if (!migrate) {
       throw new Error(`缺少配置迁移步骤 v${version - 1} -> v${version}`)
     }
-    migrated = migrate(migrated)
+    migrated = migrate(migrated, defaultConfig)
     migrated.configVersion = version
   }
 
@@ -75,6 +78,30 @@ export function prepareManagedConfig(defaultConfig, userConfig) {
     toVersion: currentVersion,
     shouldWrite: !isDeepStrictEqual(userConfig, config)
   }
+}
+
+function migrateToResponsesApi(config, defaultConfig) {
+  const migrated = cloneValue(config)
+  const ai = migrated.turtleSoupAi
+  if (!isPlainObject(ai)) {
+    return migrated
+  }
+
+  const unusedLegacyProvider = !String(ai.apiKey || "").trim()
+    && ai.endpoint === LEGACY_AI_ENDPOINT
+    && ai.model === LEGACY_AI_MODEL
+  const defaultAi = isPlainObject(defaultConfig.turtleSoupAi) ? defaultConfig.turtleSoupAi : {}
+  if (unusedLegacyProvider) {
+    ai.endpoint = defaultAi.endpoint
+    ai.model = defaultAi.model
+    ai.maxOutputTokens = defaultAi.maxOutputTokens
+    ai.timeoutMs = defaultAi.timeoutMs
+  } else if (!Object.hasOwn(ai, "maxOutputTokens") && Object.hasOwn(ai, "maxTokens")) {
+    ai.maxOutputTokens = ai.maxTokens
+  }
+  delete ai.maxTokens
+  delete ai.enabled
+  return migrated
 }
 
 async function importUserConfig(userConfigUrl) {

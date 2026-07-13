@@ -1,6 +1,13 @@
 import plugin from "../../../lib/plugins/plugin.js"
 import config from "../config/index.js"
-import { createCommandParser } from "../lib/command-parser.js"
+import {
+  createCommandParser,
+  extractTurtleSoupPreferences
+} from "../lib/command-parser.js"
+import {
+  conversationKey,
+  isPrivateMessage
+} from "../lib/message-context.js"
 import {
   formatMonitorSnapshot,
   formatPlayerStatus,
@@ -9,6 +16,15 @@ import {
   formatUndercoverSnapshot
 } from "../lib/monitor-format.js"
 import { optimizeTurtleSoup } from "../lib/turtle-soup-ai.js"
+import { submitTurtleSoupQuestion } from "../lib/turtle-soup-api.js"
+import {
+  formatTurtleSoupPreviewMessages,
+  formatTurtleSoupReceipt
+} from "../lib/turtle-soup-format.js"
+import {
+  TurtleSoupSubmissionWorkflow,
+  TurtleSoupWorkflowError
+} from "../lib/turtle-soup-workflow.js"
 
 const STARTUP_ACTIONS = [
   {
@@ -42,12 +58,17 @@ const ACTIONS = [
 const API_METHODS = new Map([
   ["/screenshot", "GET"],
   ...READ_ACTIONS.flatMap((item) => item.paths.map((path) => [path, "GET"])),
-  ["/turtle-soup/questions", "POST"],
   ...STARTUP_ACTIONS.map((item) => [item.path, "POST"])
 ])
 const SELECTOR_TTL_MS = 60_000
 const pendingSelections = new Map()
 const parseCommand = createCommandParser(ACTIONS, (key) => Boolean(findBackend(key)))
+const turtleSoupWorkflow = new TurtleSoupSubmissionWorkflow({
+  optimize: (request) => optimizeTurtleSoup(request, config.turtleSoupAi),
+  submit: (backend, draft) => submitTurtleSoupQuestion(backend, draft, {
+    timeoutMs: config.requestTimeoutMs
+  })
+})
 
 export class qianxing extends plugin {
   constructor() {
@@ -73,6 +94,28 @@ export class qianxing extends plugin {
     const parsed = parseCommand(messageText(e))
     if (!parsed) {
       return false
+    }
+
+    if (isTurtleSoupWriteAction(parsed.action) && !isPrivateMessage(e)) {
+      await this.replyMessage(e, "海龟汤投稿仅支持私聊")
+      return true
+    }
+
+    if (parsed.action === "确认海龟汤投稿") {
+      await this.confirmTurtleSoup(e)
+      return true
+    }
+    if (parsed.action === "取消海龟汤投稿") {
+      await this.cancelTurtleSoup(e)
+      return true
+    }
+    if (parsed.action === "调整海龟汤投稿") {
+      await this.adjustTurtleSoup(e, parsed.rawContent)
+      return true
+    }
+    if (parsed.action === "提交海龟汤" && !parsed.rawContent) {
+      await this.replyMessage(e, "请在 #千星海龟汤投稿 后提供标题、汤面和汤底初稿")
+      return true
     }
 
     if (parsed.action === "帮助") {
@@ -130,6 +173,14 @@ export class qianxing extends plugin {
       await this.replyMessage(e, "未配置千星后端")
       return
     }
+    if (parsed.action === "提交海龟汤") {
+      try {
+        turtleSoupWorkflow.discard(selectionKey(e))
+      } catch (error) {
+        await this.replyMessage(e, turtleSoupWorkflowError(error))
+        return
+      }
+    }
     if (backends.length === 1 && (parsed.action === "截图" || parsed.action === "提交海龟汤")) {
       await this.runSingle(e, backends[0], parsed)
       return
@@ -169,11 +220,13 @@ export class qianxing extends plugin {
   async runSingle(e, backend, parsed) {
     try {
       if (parsed.action === "提交海龟汤") {
-        await this.replyMessage(e, "正在整理并提交海龟汤")
-        const submission = await optimizeTurtleSoup(parsed.rawContent, config.turtleSoupAi)
-        const receipt = await apiJson(backend, "/turtle-soup/questions", {}, { json: submission })
-        const total = receipt.total ? `，题库共 ${receipt.total} 题` : ""
-        await this.replyMessage(e, `${backend.name}：已保存 ${receipt.id}（第 ${receipt.position} 题${total}）`)
+        await this.replyMessage(e, "正在整理海龟汤投稿预览")
+        const preferences = extractTurtleSoupPreferences(parsed.rawContent)
+        const preview = await turtleSoupWorkflow.start(selectionKey(e), {
+          backend,
+          ...preferences
+        })
+        await this.replyTurtleSoupPreview(e, preview)
         return
       }
       if (parsed.action === "截图") {
@@ -184,10 +237,49 @@ export class qianxing extends plugin {
       await this.replyMessage(e, await runAction(backend, parsed))
     } catch (error) {
       if (parsed.action === "提交海龟汤") {
-        await this.replyMessage(e, `${backend.name}：海龟汤提交失败：${apiErrorDetail(error)}`)
+        await this.replyMessage(e, `${backend.name}：海龟汤预览生成失败：${turtleSoupWorkflowError(error)}`)
         return
       }
       await this.replyMessage(e, formatActionError(backend, error))
+    }
+  }
+
+  async adjustTurtleSoup(e, adjustmentRequest) {
+    if (!String(adjustmentRequest || "").trim()) {
+      await this.replyMessage(e, "请在 #千星调整投稿 后提供修改要求")
+      return
+    }
+    try {
+      await this.replyMessage(e, "正在调整海龟汤投稿预览")
+      const preview = await turtleSoupWorkflow.adjust(selectionKey(e), adjustmentRequest)
+      await this.replyTurtleSoupPreview(e, preview)
+    } catch (error) {
+      await this.replyMessage(e, `海龟汤投稿调整失败：${turtleSoupWorkflowError(error)}`)
+    }
+  }
+
+  async confirmTurtleSoup(e) {
+    try {
+      await this.replyMessage(e, "正在提交海龟汤")
+      const result = await turtleSoupWorkflow.confirm(selectionKey(e))
+      await this.replyMessage(e, formatTurtleSoupReceipt(result))
+    } catch (error) {
+      await this.replyMessage(e, `海龟汤投稿失败：${turtleSoupWorkflowError(error)}`)
+    }
+  }
+
+  async cancelTurtleSoup(e) {
+    try {
+      turtleSoupWorkflow.cancel(selectionKey(e))
+      await this.replyMessage(e, "已取消海龟汤投稿")
+    } catch (error) {
+      await this.replyMessage(e, `无法取消海龟汤投稿：${turtleSoupWorkflowError(error)}`)
+    }
+  }
+
+  async replyTurtleSoupPreview(e, preview) {
+    for (const message of formatTurtleSoupPreviewMessages(preview)) {
+      await this.replyMessage(e, message)
     }
   }
 
@@ -205,6 +297,15 @@ function action(name, aliases, paths = [], run = null) {
 
 function isSelectorAction(actionName) {
   return actionName === "截图" || actionName === "提交海龟汤" || Boolean(findStartupAction(actionName))
+}
+
+function isTurtleSoupWriteAction(actionName) {
+  return [
+    "提交海龟汤",
+    "调整海龟汤投稿",
+    "确认海龟汤投稿",
+    "取消海龟汤投稿"
+  ].includes(actionName)
 }
 
 function selectorInstruction(actionName) {
@@ -267,9 +368,20 @@ function formatHelp() {
     "#千星状态 / #千星监控 / #千星队列 / #千星健康",
     "#千星海龟汤状态 / #千星卧底状态",
     "#千星启动原神 / #千星进入千星 / #千星截图 / #千星列表",
-    "提交海龟汤：#千星海龟汤 <原始内容>",
+    "私聊投稿：#千星海龟汤投稿 <原始内容>",
+    "投稿操作：#千星确认投稿 / #千星调整投稿 <要求> / #千星取消投稿",
     "指定后端：#千星A状态、#千星A海龟汤状态、#千星A卧底状态、#千星A启动原神、#千星A进入千星、#千星A截图"
   ].join("\n")
+}
+
+function turtleSoupWorkflowError(error) {
+  if (error instanceof TurtleSoupWorkflowError) {
+    return error.message
+  }
+  if (error?.name === "AbortError") {
+    return "请求超时"
+  }
+  return error?.message || "未知错误"
 }
 
 async function runAction(backend, parsed) {
@@ -441,7 +553,7 @@ async function apiFetch(backend, path, query = {}, options = {}) {
 }
 
 function selectionKey(e) {
-  return `${e.group_id || "private"}:${e.user_id || "unknown"}`
+  return conversationKey(e)
 }
 
 function messageText(e) {

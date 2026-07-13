@@ -223,6 +223,78 @@ test("custom backends inherit only fields common to all default backends", () =>
   }])
 })
 
+test("migrates v1 AI settings to Responses API fields without losing secrets", () => {
+  const version2Defaults = {
+    configVersion: 2,
+    turtleSoupAi: {
+      endpoint: "https://api.openai.com/v1/responses",
+      apiKey: "",
+      model: "gpt-5.6",
+      reasoningEffort: "medium",
+      verbosity: "high",
+      maxOutputTokens: 16384,
+      timeoutMs: 180000,
+      systemPrompt: "default prompt"
+    }
+  }
+  const plan = prepareManagedConfig(version2Defaults, {
+    configVersion: 1,
+    turtleSoupAi: {
+      enabled: true,
+      endpoint: "https://gateway.example/v1/responses",
+      apiKey: "keep-secret",
+      model: "custom-model",
+      timeoutMs: 90000,
+      maxTokens: 4096
+    }
+  })
+
+  assert.equal(plan.fromVersion, 1)
+  assert.equal(plan.toVersion, 2)
+  assert.equal(plan.shouldWrite, true)
+  assert.deepEqual(plan.config.turtleSoupAi, {
+    endpoint: "https://gateway.example/v1/responses",
+    apiKey: "keep-secret",
+    model: "custom-model",
+    reasoningEffort: "medium",
+    verbosity: "high",
+    maxOutputTokens: 4096,
+    timeoutMs: 90000,
+    systemPrompt: "default prompt"
+  })
+})
+
+test("moves an unused v1 default AI provider to the new OpenAI default", () => {
+  const plan = prepareManagedConfig({
+    configVersion: 2,
+    turtleSoupAi: {
+      endpoint: "https://api.openai.com/v1/responses",
+      apiKey: "",
+      model: "gpt-5.6",
+      maxOutputTokens: 16384,
+      timeoutMs: 180000
+    }
+  }, {
+    configVersion: 1,
+    turtleSoupAi: {
+      enabled: false,
+      endpoint: "https://api.deepseek.com/chat/completions",
+      apiKey: "",
+      model: "deepseek-chat",
+      maxTokens: 1200,
+      timeoutMs: 30000
+    }
+  })
+
+  assert.deepEqual(plan.config.turtleSoupAi, {
+    endpoint: "https://api.openai.com/v1/responses",
+    apiKey: "",
+    model: "gpt-5.6",
+    maxOutputTokens: 16384,
+    timeoutMs: 180000
+  })
+})
+
 async function temporaryDirectory(t) {
   const directory = await mkdtemp(path.join(tmpdir(), "miliastra-yunzai-config-"))
   t.after(() => rm(directory, { recursive: true, force: true }))
