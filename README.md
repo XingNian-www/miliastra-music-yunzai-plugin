@@ -16,16 +16,11 @@ git clone https://github.com/XingNian-www/miliastra-music-yunzai-plugin.git ./pl
 
 ## 配置
 
-插件自带默认配置 `config/default.js`。需要修改后端地址时，复制示例配置为本地配置：
-
-```bash
-cp config/config.example.js config/config.js
-```
-
-然后编辑 `config/config.js`：
+插件首次加载时会根据 `config/default.js` 自动生成本地配置 `config/config.js`。首次重启 Yunzai 后，直接编辑生成的文件：
 
 ```js
 export default {
+  configVersion: 1,
   requestTimeoutMs: 5000,
   queuePreviewLimit: 5,
   screenshotQuality: 88,
@@ -55,20 +50,19 @@ export default {
 }
 ```
 
-`config/config.js` 已加入 `.gitignore`，插件更新时不会被 `git pull` 覆盖。更新只会改动默认配置和示例配置。
+`config/config.js` 已加入 `.gitignore`，插件更新时不会被 `git pull` 覆盖。`config/default.js` 是插件跟踪的配置结构，请只修改自动生成的 `config/config.js`。
+
+每次加载时，插件会检查 `configVersion`。升级后的默认配置存在新增字段时，插件会自动补入本地配置并原子写回；已有后端、地址、访问令牌、AI 密钥和未知扩展字段都会保留，每个自定义后端也会补齐新增的后端字段。配置版本高于当前插件时只读取、不降级或覆盖。
+
+本地配置按普通数据对象管理，只支持 `export default { ... }` 对象字面量。为避免迁移时执行代码或把环境变量密钥固化到文件，`process.env`、import、函数、getter 和其他运行逻辑会被拒绝。发生生成或迁移时会规范化写回，手写注释不保证保留。
+
+如果 `config/config.js` 存在语法错误或 default export 不是对象，插件会停止加载并报告错误，不会覆盖原文件。不要手动修改 `configVersion`。
 
 如果 Miliastra Wonderland Music 配置了 `http.access_token`，需要把同一个值填到对应后端的 `accessToken`。多个后端令牌相同也可以只填顶层 `accessToken`，后端未单独配置时会继承它。
 
 `key` 会用于命令里的后端选择，例如 `#千星A状态`。不要把后端 key 配成 `状态`、`监控`、`队列`、`健康`、`海龟汤状态`、`卧底状态`、`启动原神`、`进入千星`、`截图` 或 `列表`。
 
-从旧版本更新且已经改过 `config/config.js` 时，先备份自己的配置，再更新插件，最后把配置放回去：
-
-```bash
-cp config/config.js /tmp/miliastra-music-config.js
-git checkout -- config/config.js
-git pull
-cp /tmp/miliastra-music-config.js config/config.js
-```
+旧版本没有 `configVersion` 的配置会被识别为 v0，并在首次加载新版插件时自动迁移到 v1。
 
 ## 命令
 

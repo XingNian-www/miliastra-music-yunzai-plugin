@@ -1,4 +1,5 @@
 export default {
+  configVersion: 1,
   requestTimeoutMs: 5000,
   queuePreviewLimit: 5,
   screenshotQuality: 88,
