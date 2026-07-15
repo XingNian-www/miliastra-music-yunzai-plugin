@@ -88,7 +88,9 @@ test("optimizes through the Responses API with strict structured output", async 
   }, aiConfig(), fetchImpl)
 
   assert.equal(request.endpoint, "https://api.openai.com/v1/responses")
-  assert.equal(request.options.headers.Authorization, "Bearer secret")
+  const headers = new Headers(request.options.headers)
+  assert.equal(headers.get("authorization"), "Bearer secret")
+  assert.equal(headers.get("x-stainless-retry-count"), "0")
   const body = JSON.parse(request.options.body)
   assert.equal(body.model, "gpt-5.6")
   assert.equal(body.instructions, "系统提示词")
@@ -107,9 +109,122 @@ test("optimizes through the Responses API with strict structured output", async 
   assert.equal(body.text.format.schema.additionalProperties, false)
   assert.equal(body.max_output_tokens, 16384)
   assert.equal(body.store, false)
+  assert.equal(body.stream, false)
   assert.equal(Object.hasOwn(body, "temperature"), false)
-  assert.equal(Object.hasOwn(request.options, "agent"), false)
   assert.deepEqual(result, completeDraft)
+})
+
+test("passes safe extraBody fields while standard Responses fields win conflicts", async () => {
+  let body
+  const result = await optimizeTurtleSoup({ rawContent: "初稿" }, {
+    ...aiConfig(),
+    extraBody: {
+      model: "vendor-model",
+      instructions: "vendor instructions",
+      input: "vendor input",
+      reasoning: { effort: "none" },
+      text: { verbosity: "low" },
+      max_output_tokens: 1,
+      store: true,
+      stream: true,
+      vendor_extension: {
+        enabled: true,
+        values: [1, null, "兼容"]
+      }
+    }
+  }, async (_endpoint, options) => {
+    body = JSON.parse(options.body)
+    return responseJson({
+      status: "completed",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: JSON.stringify(completeDraft) }]
+      }]
+    })
+  })
+
+  assert.equal(body.model, "gpt-5.6")
+  assert.equal(body.instructions, "系统提示词")
+  assert.match(body.input, /用户初稿：\n初稿/)
+  assert.deepEqual(body.reasoning, { effort: "medium" })
+  assert.equal(body.text.verbosity, "high")
+  assert.equal(body.text.format.type, "json_schema")
+  assert.equal(body.max_output_tokens, 16384)
+  assert.equal(body.store, false)
+  assert.equal(body.stream, false)
+  assert.deepEqual(body.vendor_extension, {
+    enabled: true,
+    values: [1, null, "兼容"]
+  })
+  assert.deepEqual(result, completeDraft)
+})
+
+test("rejects unsafe extraBody values before sending content", async () => {
+  const cyclic = {}
+  cyclic.self = cyclic
+  const values = [
+    null,
+    [],
+    Object.create({ inherited: true }),
+    JSON.parse('{"__proto__":{"polluted":true}}'),
+    cyclic,
+    { unsupported: undefined }
+  ]
+  let calls = 0
+
+  for (const extraBody of values) {
+    await assert.rejects(
+      optimizeTurtleSoup({ rawContent: "初稿" }, {
+        ...aiConfig(),
+        extraBody
+      }, async () => {
+        calls += 1
+        return responseJson({})
+      }),
+      /extraBody/
+    )
+  }
+
+  assert.equal(calls, 0)
+  assert.equal({}.polluted, undefined)
+})
+
+test("preserves a complete custom Responses endpoint including its query", async () => {
+  let requestedEndpoint
+  const result = await optimizeTurtleSoup({ rawContent: "初稿" }, {
+    ...aiConfig(),
+    endpoint: "https://gateway.example/openai/v1/responses?api-version=2026-07-15"
+  }, async (endpoint) => {
+    requestedEndpoint = endpoint
+    return responseJson({
+      status: "completed",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: JSON.stringify(completeDraft) }]
+      }]
+    })
+  })
+
+  assert.equal(
+    requestedEndpoint,
+    "https://gateway.example/openai/v1/responses?api-version=2026-07-15"
+  )
+  assert.deepEqual(result, completeDraft)
+})
+
+test("rejects duplicate endpoint query keys instead of silently collapsing them", async () => {
+  let called = false
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, {
+      ...aiConfig(),
+      endpoint: "https://gateway.example/openai/v1/responses?scope=read&scope=write"
+    }, async () => {
+      called = true
+      return responseJson({})
+    }),
+    /endpoint 不支持重复查询参数：scope/
+  )
+  assert.equal(called, false)
 })
 
 test("routes only AI requests through the configured HTTP proxy", async () => {
@@ -247,6 +362,54 @@ test("rejects refusals and incomplete Responses API results", async () => {
   )
 })
 
+test("does not let the SDK retry a failed AI request", async () => {
+  let calls = 0
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => {
+      calls += 1
+      return responseJson({ error: { message: "temporary failure" } }, {
+        ok: false,
+        status: 500
+      })
+    }),
+    /请求失败（HTTP 500）/
+  )
+  assert.equal(calls, 1)
+})
+
+test("keeps timeout failures compatible with the workflow AbortError mapping", async () => {
+  const hangingFetch = async (_endpoint, options) => new Promise((_resolve, reject) => {
+    const rejectAbort = () => {
+      const error = new Error("aborted")
+      error.name = "AbortError"
+      reject(error)
+    }
+    if (options.signal.aborted) {
+      rejectAbort()
+      return
+    }
+    options.signal.addEventListener("abort", rejectAbort, { once: true })
+  })
+
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, {
+      ...aiConfig(),
+      timeoutMs: 10
+    }, hangingFetch),
+    (error) => error.name === "AbortError" && /请求超时/.test(error.message)
+  )
+})
+
+test("reports invalid JSON from a successful AI response", async () => {
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => new Response("{", {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    })),
+    /返回的响应不是有效 JSON/
+  )
+})
+
 test("rejects legacy Chat Completions endpoints before sending content", async () => {
   let called = false
   await assert.rejects(
@@ -277,6 +440,21 @@ test("rejects non-HTTP AI endpoints before sending content", async () => {
   assert.equal(called, false)
 })
 
+test("requires a complete Responses endpoint before sending content", async () => {
+  let called = false
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, {
+      ...aiConfig(),
+      endpoint: "https://gateway.example/openai/v1"
+    }, async () => {
+      called = true
+      return responseJson({})
+    }),
+    /endpoint 必须是完整的 \/responses 请求地址/
+  )
+  assert.equal(called, false)
+})
+
 function aiConfig() {
   return {
     endpoint: "https://api.openai.com/v1/responses",
@@ -292,16 +470,10 @@ function aiConfig() {
 }
 
 function responseJson(payload, options = {}) {
-  return {
-    ok: options.ok ?? true,
+  return new Response(JSON.stringify(payload), {
     status: options.status ?? 200,
-    async json() {
-      return payload
-    },
-    async text() {
-      return JSON.stringify(payload)
-    }
-  }
+    headers: { "Content-Type": "application/json" }
+  })
 }
 
 async function listen(server) {

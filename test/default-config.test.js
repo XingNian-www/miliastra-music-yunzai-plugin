@@ -11,6 +11,7 @@ test("defaults turtle soup editing to GPT-5.6 Responses API settings", () => {
     model: defaultConfig.turtleSoupAi.model,
     reasoningEffort: defaultConfig.turtleSoupAi.reasoningEffort,
     verbosity: defaultConfig.turtleSoupAi.verbosity,
+    extraBody: defaultConfig.turtleSoupAi.extraBody,
     maxOutputTokens: defaultConfig.turtleSoupAi.maxOutputTokens,
     timeoutMs: defaultConfig.turtleSoupAi.timeoutMs
   }, {
@@ -19,6 +20,7 @@ test("defaults turtle soup editing to GPT-5.6 Responses API settings", () => {
     model: "gpt-5.6",
     reasoningEffort: "medium",
     verbosity: "high",
+    extraBody: {},
     maxOutputTokens: 16384,
     timeoutMs: 180000
   })

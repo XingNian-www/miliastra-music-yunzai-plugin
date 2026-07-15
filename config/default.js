@@ -13,6 +13,7 @@ export default {
     model: "gpt-5.6",
     reasoningEffort: "medium",
     verbosity: "high",
+    extraBody: {},
     maxOutputTokens: 16384,
     timeoutMs: 180000,
     systemPrompt: DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT

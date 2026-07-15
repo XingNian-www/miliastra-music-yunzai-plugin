@@ -8,13 +8,15 @@
 
 ```bash
 git clone https://github.com/XingNian-www/miliastra-music-yunzai-plugin.git ./plugins/miliastra-music-yunzai-plugin
+cd ./plugins/miliastra-music-yunzai-plugin
+pnpm install
 ```
 
 然后重启 Yunzai。
 
 要求 Yunzai 使用 Node.js 18 或更新版本。
 
-TRSS-Yunzai 已自带 AI HTTP 代理所需的 `https-proxy-agent`。其他 Yunzai 发行版如果使用代理时提示缺少依赖，请在插件目录执行 `pnpm install`。
+插件使用官方 OpenAI Node SDK，并通过 `https-proxy-agent` 支持可选的 AI HTTP 代理；两者都会由上述 `pnpm install` 安装。
 
 ## 配置
 
@@ -34,6 +36,7 @@ export default {
     model: "gpt-5.6",
     reasoningEffort: "medium",
     verbosity: "high",
+    extraBody: {},
     maxOutputTokens: 16384,
     timeoutMs: 180000,
     systemPrompt: "首次生成配置时会写入完整默认提示词"
@@ -57,7 +60,9 @@ export default {
 
 `config/config.js` 已加入 `.gitignore`，插件更新时不会被 `git pull` 覆盖。`config/default.js` 是插件跟踪的配置结构，请只修改自动生成的 `config/config.js`。
 
-`turtleSoupAi.endpoint` 是完整请求地址，可以改为代理或自建网关，但目标必须兼容 OpenAI Responses API 和 `text.format` 严格 JSON Schema。插件不会自动回退到 Chat Completions。默认提示词的可读版本位于 `lib/turtle-soup-prompt.js`，首次生成或迁移配置时会完整写入 `systemPrompt`，之后可在本地配置中覆盖。
+`turtleSoupAi.endpoint` 是以 `/responses` 结尾的完整请求地址，可以改为代理或自建网关，也可以带网关要求的查询参数，但同一个查询参数名不能重复；OpenAI SDK 无法通过 `defaultQuery` 无损表达重复键，插件会在发送前明确拒绝这类地址，避免静默改变请求。目标必须兼容 OpenAI Responses API 和 `text.format` 严格 JSON Schema。插件不会自动回退到 Chat Completions，也不会自动重试失败的 AI 请求。默认提示词的可读版本位于 `lib/turtle-soup-prompt.js`，首次生成或迁移配置时会完整写入 `systemPrompt`，之后可在本地配置中覆盖。
+
+`turtleSoupAi.extraBody` 默认是空对象，用于向兼容网关传递标准请求体之外的第三方扩展字段。插件会先展开 `extraBody`，再写入自身使用的 OpenAI Responses 标准字段，因此 `model`、`instructions`、`input`、`reasoning`、`text`、`max_output_tokens`、`store` 和 `stream` 等冲突项始终以插件标准值为准。该配置只能是安全、可序列化的普通 JSON 对象，不能把数组、`null` 或带自定义原型的对象用作顶层值。已有配置缺少该字段时会自动补为 `{}`，已有 AI 密钥和扩展字段保持不变。
 
 自定义 `systemPrompt` 时必须要求模型返回 `title`、`surface`、`bottom`、`adjudicationNotes` 和 `logicReview`。v3 会保留自定义提示词，不会自动改写其中的输出约定。
 

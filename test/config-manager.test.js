@@ -114,16 +114,31 @@ test("does not rewrite complete current or future-version configs", () => {
   assert.equal(futurePlan.config.requestTimeoutMs, 1234)
 })
 
-test("adds proxyUrl to an existing current config without changing AI secrets", () => {
+test("adds missing AI fields to an existing current config without changing secrets", () => {
   const localConfig = structuredClone(defaultConfig)
   localConfig.turtleSoupAi.apiKey = "keep-secret"
   delete localConfig.turtleSoupAi.proxyUrl
+  delete localConfig.turtleSoupAi.extraBody
 
   const plan = prepareManagedConfig(defaultConfig, localConfig)
 
   assert.equal(plan.shouldWrite, true)
   assert.equal(plan.config.turtleSoupAi.proxyUrl, "")
+  assert.deepEqual(plan.config.turtleSoupAi.extraBody, {})
   assert.equal(plan.config.turtleSoupAi.apiKey, "keep-secret")
+})
+
+test("preserves custom AI extraBody fields in current configs", () => {
+  const localConfig = structuredClone(defaultConfig)
+  localConfig.turtleSoupAi.extraBody = {
+    enable_thinking: true,
+    vendor_options: { modes: ["fast", "stable"] }
+  }
+
+  const plan = prepareManagedConfig(defaultConfig, localConfig)
+
+  assert.equal(plan.shouldWrite, false)
+  assert.deepEqual(plan.config.turtleSoupAi.extraBody, localConfig.turtleSoupAi.extraBody)
 })
 
 test("reloads config in place and keeps the current config when reloading fails", async (t) => {
