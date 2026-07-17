@@ -378,15 +378,13 @@ function findStartupAction(actionName) {
 }
 
 function normalizedBackends() {
-  return (config.backends || [])
-    .map((backend, index) => ({
-      key: String(backend.key || index + 1),
-      name: backend.name || `${backend.key || index + 1}号千星`,
-      baseUrl: String(backend.baseUrl || "").replace(/\/+$/, ""),
-      accessToken: firstNonEmpty(backend.accessToken, config.accessToken),
-      screenshotQuality: backend.screenshotQuality ?? config.screenshotQuality
+  return config.backends
+    .map((backend) => ({
+      key: backend.key,
+      name: backend.name,
+      baseUrl: backend.baseUrl.replace(/\/+$/, ""),
+      accessToken: firstNonEmpty(backend.accessToken, config.accessToken)
     }))
-    .filter((backend) => backend.baseUrl)
 }
 
 function firstNonEmpty(...values) {
@@ -504,7 +502,7 @@ async function statusLine(backend) {
 }
 
 function queuePreviewLimit() {
-  return Number(config.queuePreviewLimit || 5)
+  return config.queuePreviewLimit
 }
 
 function formatStartupReceipt(reply, receipt = {}) {
@@ -548,7 +546,7 @@ function formatActionError(backend, error) {
 }
 
 async function requestScreenshot(backend) {
-  const quality = String(backend.screenshotQuality || config.screenshotQuality || 88)
+  const quality = String(config.screenshotQuality)
   const response = await apiFetch(backend, "/screenshot", { quality })
   const arrayBuffer = await response.arrayBuffer()
   const buffer = Buffer.from(arrayBuffer)
@@ -575,7 +573,7 @@ async function apiFetch(backend, path, query = {}, options = {}) {
   }
 
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), Number(config.requestTimeoutMs || 5000))
+  const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs)
   const url = new URL(`${backend.baseUrl}${path}`)
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== null && value !== "") {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 
 import defaultConfig from "../config/default.js"
 
-test("defaults turtle soup editing to GPT-5.6 Responses API settings", () => {
+test("defaults turtle soup editing to GPT-5.6 max-reasoning Responses settings", () => {
   assert.equal(defaultConfig.configVersion, 3)
   assert.deepEqual({
     endpoint: defaultConfig.turtleSoupAi.endpoint,
@@ -18,7 +18,7 @@ test("defaults turtle soup editing to GPT-5.6 Responses API settings", () => {
     endpoint: "https://api.openai.com/v1/responses",
     proxyUrl: "",
     model: "gpt-5.6",
-    reasoningEffort: "medium",
+    reasoningEffort: "max",
     verbosity: "high",
     extraBody: {},
     maxOutputTokens: 16384,

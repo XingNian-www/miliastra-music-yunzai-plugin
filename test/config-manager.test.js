@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
@@ -11,10 +11,6 @@ import {
   reloadManagedConfig
 } from "../config/manager.js"
 import defaultConfig from "../config/default.js"
-import {
-  DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT,
-  LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2
-} from "../lib/turtle-soup-prompt.js"
 
 const defaults = {
   configVersion: 1,
@@ -52,80 +48,93 @@ test("creates a complete ignored user config on first load", async (t) => {
   assert.deepEqual(messages, ["已生成本地配置 config/config.js"])
 })
 
-test("migrates versionless configs without losing secrets or custom fields", async (t) => {
+test("rejects versionless, older, and future configs instead of migrating them", () => {
+  for (const config of [
+    {},
+    { ...defaultConfig, configVersion: defaultConfig.configVersion - 1 },
+    { ...defaultConfig, configVersion: defaultConfig.configVersion + 1 }
+  ]) {
+    assert.throws(
+      () => prepareManagedConfig(defaultConfig, config),
+      /configVersion/
+    )
+  }
+})
+
+test("rejects current configs with missing fields instead of filling defaults", () => {
+  const config = structuredClone(defaultConfig)
+  delete config.turtleSoupAi.proxyUrl
+
+  assert.throws(
+    () => prepareManagedConfig(defaultConfig, config),
+    /turtleSoupAi\.proxyUrl/
+  )
+})
+
+test("rejects unknown fields outside the explicitly open extraBody object", () => {
+  const cases = [
+    ["customRoot", (config) => { config.customRoot = true }],
+    ["turtleSoupAi.customOption", (config) => { config.turtleSoupAi.customOption = true }],
+    ["backends.0.transport", (config) => { config.backends[0].transport = "http" }]
+  ]
+
+  for (const [path, mutate] of cases) {
+    const config = structuredClone(defaultConfig)
+    mutate(config)
+    assert.throws(
+      () => prepareManagedConfig(defaultConfig, config),
+      new RegExp(path.replaceAll(".", "\\."))
+    )
+  }
+})
+
+test("rejects current fields whose value types do not match the schema", () => {
+  const cases = [
+    ["requestTimeoutMs", (config) => { config.requestTimeoutMs = "5000" }],
+    ["turtleSoupAi.extraBody", (config) => { config.turtleSoupAi.extraBody = [] }],
+    ["backends.0.accessToken", (config) => { config.backends[0].accessToken = null }]
+  ]
+
+  for (const [path, mutate] of cases) {
+    const config = structuredClone(defaultConfig)
+    mutate(config)
+    assert.throws(
+      () => prepareManagedConfig(defaultConfig, config),
+      new RegExp(path.replaceAll(".", "\\."))
+    )
+  }
+})
+
+test("accepts a complete custom backend using the current backend schema", () => {
+  const config = structuredClone(defaultConfig)
+  config.backends = [{
+    key: "X",
+    name: "自定义千星",
+    baseUrl: "http://10.0.0.8:18888",
+    accessToken: "backend-secret"
+  }]
+
+  const plan = prepareManagedConfig(defaultConfig, config)
+
+  assert.equal(plan.shouldWrite, false)
+  assert.deepEqual(plan.config, config)
+})
+
+test("loads a complete current config without rewriting its source", async (t) => {
   const directory = await temporaryDirectory(t)
   const configPath = path.join(directory, "config.js")
   const configUrl = pathToFileURL(configPath)
-  await writeFile(configPath, `// 历史配置允许注释、未引号键、单引号和尾逗号
-export default {
-  requestTimeoutMs: 9000,
-  accessToken: 'backend-secret',
-  nested: { apiKey: "ai-secret" },
-  backends: [{
-    key: "X",
-    name: "自定义后端",
-    baseUrl: "http://10.0.0.8:18888",
-    customFlag: true,
-  }],
-  customRoot: "keep-me",
-}
-`, "utf8")
-
+  const source = `// 当前配置中的注释应保留\nexport default ${JSON.stringify(defaults)}\n`
+  await writeFile(configPath, source, "utf8")
   const messages = []
+
   const config = await loadManagedConfig(defaults, configUrl, {
     log: (message) => messages.push(message)
   })
 
-  assert.equal(config.configVersion, 1)
-  assert.equal(config.requestTimeoutMs, 9000)
-  assert.equal(config.accessToken, "backend-secret")
-  assert.deepEqual(config.nested, { enabled: false, apiKey: "ai-secret" })
-  assert.equal(config.backends.length, 1)
-  assert.deepEqual(config.backends[0], {
-    key: "X",
-    name: "自定义后端",
-    baseUrl: "http://10.0.0.8:18888",
-    accessToken: "",
-    customFlag: true
-  })
-  assert.equal(config.customRoot, "keep-me")
-  assert.deepEqual(await importConfig(configUrl), config)
-  assert.deepEqual(messages, ["已迁移本地配置 v0 -> v1"])
-  assert.deepEqual(await readdir(directory), ["config.js"])
-})
-
-test("does not rewrite complete current or future-version configs", () => {
-  const current = {
-    ...defaults,
-    customRoot: true
-  }
-  const currentPlan = prepareManagedConfig(defaults, current)
-  assert.equal(currentPlan.shouldWrite, false)
-  assert.equal(currentPlan.config.customRoot, true)
-
-  const future = {
-    ...defaults,
-    configVersion: 9,
-    requestTimeoutMs: 1234
-  }
-  const futurePlan = prepareManagedConfig(defaults, future)
-  assert.equal(futurePlan.shouldWrite, false)
-  assert.equal(futurePlan.config.configVersion, 9)
-  assert.equal(futurePlan.config.requestTimeoutMs, 1234)
-})
-
-test("adds missing AI fields to an existing current config without changing secrets", () => {
-  const localConfig = structuredClone(defaultConfig)
-  localConfig.turtleSoupAi.apiKey = "keep-secret"
-  delete localConfig.turtleSoupAi.proxyUrl
-  delete localConfig.turtleSoupAi.extraBody
-
-  const plan = prepareManagedConfig(defaultConfig, localConfig)
-
-  assert.equal(plan.shouldWrite, true)
-  assert.equal(plan.config.turtleSoupAi.proxyUrl, "")
-  assert.deepEqual(plan.config.turtleSoupAi.extraBody, {})
-  assert.equal(plan.config.turtleSoupAi.apiKey, "keep-secret")
+  assert.deepEqual(config, defaults)
+  assert.equal(await readFile(configPath, "utf8"), source)
+  assert.deepEqual(messages, [])
 })
 
 test("preserves custom AI extraBody fields in current configs", () => {
@@ -174,20 +183,6 @@ test("reloads config in place and keeps the current config when reloading fails"
   assert.deepEqual(activeConfig, snapshot)
 })
 
-test("migrates only the old default prompt from v2 to v3", () => {
-  const oldDefaultConfig = structuredClone(defaultConfig)
-  oldDefaultConfig.configVersion = 2
-  oldDefaultConfig.turtleSoupAi.systemPrompt = LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2
-
-  const migrated = prepareManagedConfig(defaultConfig, oldDefaultConfig)
-  assert.equal(migrated.config.configVersion, 3)
-  assert.equal(migrated.config.turtleSoupAi.systemPrompt, DEFAULT_TURTLE_SOUP_SYSTEM_PROMPT)
-
-  oldDefaultConfig.turtleSoupAi.systemPrompt = "我的自定义提示词"
-  const customized = prepareManagedConfig(defaultConfig, oldDefaultConfig)
-  assert.equal(customized.config.turtleSoupAi.systemPrompt, "我的自定义提示词")
-})
-
 test("rejects invalid config modules without overwriting them", async (t) => {
   const directory = await temporaryDirectory(t)
   const configPath = path.join(directory, "config.js")
@@ -231,7 +226,7 @@ test("refuses to rewrite executable config values", async (t) => {
   assert.equal(await readFile(configPath, "utf8"), executableSource)
 })
 
-test("does not evaluate environment expressions during migration", async (t) => {
+test("does not evaluate environment expressions while loading", async (t) => {
   const directory = await temporaryDirectory(t)
   const configPath = path.join(directory, "config.js")
   const configUrl = pathToFileURL(configPath)
@@ -271,108 +266,6 @@ test("rejects an explicitly invalid config version", async (t) => {
     /configVersion 必须是非负整数/
   )
   assert.equal(await readFile(configPath, "utf8"), invalidVersionSource)
-})
-
-test("custom backends inherit only fields common to all default backends", () => {
-  const plan = prepareManagedConfig({
-    configVersion: 1,
-    backends: [
-      { key: "A", baseUrl: "http://a", accessToken: "", transport: "http" },
-      { key: "B", baseUrl: "http://b", accessToken: "", transport: "http" }
-    ]
-  }, {
-    configVersion: 1,
-    backends: [{ key: "X", baseUrl: "http://x" }]
-  })
-
-  assert.deepEqual(plan.config.backends, [{
-    key: "X",
-    baseUrl: "http://x",
-    accessToken: "",
-    transport: "http"
-  }])
-
-  const singleDefaultPlan = prepareManagedConfig(defaults, {
-    configVersion: 1,
-    backends: [{ key: "X", baseUrl: "http://x" }]
-  })
-  assert.deepEqual(singleDefaultPlan.config.backends, [{
-    key: "X",
-    baseUrl: "http://x",
-    accessToken: ""
-  }])
-})
-
-test("migrates v1 AI settings to Responses API fields without losing secrets", () => {
-  const version2Defaults = {
-    configVersion: 2,
-    turtleSoupAi: {
-      endpoint: "https://api.openai.com/v1/responses",
-      apiKey: "",
-      model: "gpt-5.6",
-      reasoningEffort: "medium",
-      verbosity: "high",
-      maxOutputTokens: 16384,
-      timeoutMs: 180000,
-      systemPrompt: "default prompt"
-    }
-  }
-  const plan = prepareManagedConfig(version2Defaults, {
-    configVersion: 1,
-    turtleSoupAi: {
-      enabled: true,
-      endpoint: "https://gateway.example/v1/responses",
-      apiKey: "keep-secret",
-      model: "custom-model",
-      timeoutMs: 90000,
-      maxTokens: 4096
-    }
-  })
-
-  assert.equal(plan.fromVersion, 1)
-  assert.equal(plan.toVersion, 2)
-  assert.equal(plan.shouldWrite, true)
-  assert.deepEqual(plan.config.turtleSoupAi, {
-    endpoint: "https://gateway.example/v1/responses",
-    apiKey: "keep-secret",
-    model: "custom-model",
-    reasoningEffort: "medium",
-    verbosity: "high",
-    maxOutputTokens: 4096,
-    timeoutMs: 90000,
-    systemPrompt: "default prompt"
-  })
-})
-
-test("moves an unused v1 default AI provider to the new OpenAI default", () => {
-  const plan = prepareManagedConfig({
-    configVersion: 2,
-    turtleSoupAi: {
-      endpoint: "https://api.openai.com/v1/responses",
-      apiKey: "",
-      model: "gpt-5.6",
-      maxOutputTokens: 16384,
-      timeoutMs: 180000
-    }
-  }, {
-    configVersion: 1,
-    turtleSoupAi: {
-      enabled: false,
-      endpoint: "https://api.deepseek.com/chat/completions",
-      apiKey: "",
-      model: "deepseek-chat",
-      maxTokens: 1200,
-      timeoutMs: 30000
-    }
-  })
-
-  assert.deepEqual(plan.config.turtleSoupAi, {
-    endpoint: "https://api.openai.com/v1/responses",
-    apiKey: "",
-    model: "gpt-5.6",
-    maxOutputTokens: 16384,
-    timeoutMs: 180000
-  })
 })
 
 async function temporaryDirectory(t) {

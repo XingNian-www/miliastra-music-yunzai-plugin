@@ -2,36 +2,24 @@ import { existsSync } from "node:fs"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
-import { isDeepStrictEqual } from "node:util"
 import { fileURLToPath } from "node:url"
 
 import { parseConfigModule } from "./data-parser.js"
-import { LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2 } from "../lib/turtle-soup-prompt.js"
-
-const MIGRATIONS = new Map([
-  [1, (config) => config],
-  [2, migrateToResponsesApi],
-  [3, migrateToConservativeReviewPrompt]
-])
-const BACKEND_IDENTITY_FIELDS = new Set(["key", "name", "baseUrl"])
-const LEGACY_AI_ENDPOINT = "https://api.deepseek.com/chat/completions"
-const LEGACY_AI_MODEL = "deepseek-chat"
+import {
+  assertSafeJsonData,
+  cloneSafeJsonData,
+  isPlainJsonObject as isPlainObject
+} from "../lib/safe-json.js"
 
 export async function loadManagedConfig(defaultConfig, userConfigUrl, options = {}) {
   const exists = existsSync(userConfigUrl)
-  const userConfig = exists ? await importUserConfig(userConfigUrl) : {}
+  const userConfig = exists ? await importUserConfig(userConfigUrl) : defaultConfig
   const plan = prepareManagedConfig(defaultConfig, userConfig)
 
-  if (!exists || plan.shouldWrite) {
+  if (!exists) {
     await writeConfigAtomically(userConfigUrl, plan.config)
     const log = options.log || defaultLog
-    if (!exists) {
-      log("已生成本地配置 config/config.js")
-    } else if (plan.fromVersion !== plan.toVersion) {
-      log(`已迁移本地配置 v${plan.fromVersion} -> v${plan.toVersion}`)
-    } else {
-      log(`已补全本地配置 v${plan.toVersion}`)
-    }
+    log("已生成本地配置 config/config.js")
   }
 
   return plan.config
@@ -56,75 +44,80 @@ export function prepareManagedConfig(defaultConfig, userConfig) {
   if (!isPlainObject(userConfig)) {
     throw new TypeError("本地配置的 default export 必须是对象")
   }
-  assertDataOnly(defaultConfig, "默认配置")
-  assertDataOnly(userConfig, "本地配置")
+  assertSafeJsonData(defaultConfig, { label: "默认配置" })
+  assertSafeJsonData(userConfig, { label: "本地配置" })
 
-  const currentVersion = readConfigVersion(defaultConfig, "默认配置", true)
+  const currentVersion = readConfigVersion(defaultConfig, "默认配置")
   if (currentVersion < 1) {
     throw new Error("默认配置缺少有效的 configVersion")
   }
 
-  const fromVersion = readConfigVersion(userConfig, "本地配置", false)
-  if (fromVersion > currentVersion) {
-    return {
-      config: mergeWithDefaults(defaultConfig, userConfig),
-      fromVersion,
-      toVersion: fromVersion,
-      shouldWrite: false
-    }
+  const fromVersion = readConfigVersion(userConfig, "本地配置")
+  if (fromVersion !== currentVersion) {
+    throw new Error(
+      `本地配置 configVersion=${fromVersion}，当前只支持 configVersion=${currentVersion}`
+    )
   }
+  assertCurrentShape(defaultConfig, userConfig)
 
-  let migrated = cloneValue(userConfig)
-  for (let version = fromVersion + 1; version <= currentVersion; version += 1) {
-    const migrate = MIGRATIONS.get(version)
-    if (!migrate) {
-      throw new Error(`缺少配置迁移步骤 v${version - 1} -> v${version}`)
-    }
-    migrated = migrate(migrated, defaultConfig)
-    migrated.configVersion = version
-  }
-
-  const config = mergeWithDefaults(defaultConfig, migrated)
-  config.configVersion = currentVersion
   return {
-    config,
+    config: cloneSafeJsonData(userConfig, { label: "本地配置" }),
     fromVersion,
     toVersion: currentVersion,
-    shouldWrite: !isDeepStrictEqual(userConfig, config)
+    shouldWrite: false
   }
 }
 
-function migrateToResponsesApi(config, defaultConfig) {
-  const migrated = cloneValue(config)
-  const ai = migrated.turtleSoupAi
-  if (!isPlainObject(ai)) {
-    return migrated
+function assertCurrentShape(schema, value, pathParts = []) {
+  if (isOpenObject(pathParts)) {
+    if (!isPlainObject(value)) {
+      throw new TypeError(`本地配置 ${displayPath(pathParts)} 必须是对象`)
+    }
+    return
   }
 
-  const unusedLegacyProvider = !String(ai.apiKey || "").trim()
-    && ai.endpoint === LEGACY_AI_ENDPOINT
-    && ai.model === LEGACY_AI_MODEL
-  const defaultAi = isPlainObject(defaultConfig.turtleSoupAi) ? defaultConfig.turtleSoupAi : {}
-  if (unusedLegacyProvider) {
-    ai.endpoint = defaultAi.endpoint
-    ai.model = defaultAi.model
-    ai.maxOutputTokens = defaultAi.maxOutputTokens
-    ai.timeoutMs = defaultAi.timeoutMs
-  } else if (!Object.hasOwn(ai, "maxOutputTokens") && Object.hasOwn(ai, "maxTokens")) {
-    ai.maxOutputTokens = ai.maxTokens
+  if (Array.isArray(schema)) {
+    if (!Array.isArray(value)) {
+      throw new TypeError(`本地配置 ${displayPath(pathParts)} 必须是数组`)
+    }
+    const fallback = schema[0]
+    for (const [index, item] of value.entries()) {
+      const matching = isPlainObject(item)
+        ? schema.find((candidate) => isPlainObject(candidate) && candidate.key === item.key)
+        : undefined
+      if (matching || fallback) {
+        assertCurrentShape(matching || fallback, item, [...pathParts, index])
+      }
+    }
+    return
   }
-  delete ai.maxTokens
-  delete ai.enabled
-  return migrated
-}
 
-function migrateToConservativeReviewPrompt(config, defaultConfig) {
-  const migrated = cloneValue(config)
-  const ai = migrated.turtleSoupAi
-  if (isPlainObject(ai) && ai.systemPrompt === LEGACY_TURTLE_SOUP_SYSTEM_PROMPT_V2) {
-    ai.systemPrompt = defaultConfig.turtleSoupAi?.systemPrompt
+  if (!isPlainObject(schema)) {
+    if (!sameValueType(schema, value)) {
+      throw new TypeError(
+        `本地配置 ${displayPath(pathParts)} 类型错误，应为 ${valueType(schema)}`
+      )
+    }
+    return
   }
-  return migrated
+
+  if (!isPlainObject(value)) {
+    throw new TypeError(`本地配置 ${displayPath(pathParts)} 必须是对象`)
+  }
+
+  for (const [key, childSchema] of Object.entries(schema)) {
+    const childPath = [...pathParts, key]
+    if (!Object.hasOwn(value, key)) {
+      throw new Error(`本地配置缺少 ${displayPath(childPath)}`)
+    }
+    assertCurrentShape(childSchema, value[key], childPath)
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!Object.hasOwn(schema, key)) {
+      throw new Error(`本地配置包含未知字段 ${displayPath([...pathParts, key])}`)
+    }
+  }
 }
 
 async function importUserConfig(userConfigUrl) {
@@ -134,8 +127,7 @@ async function importUserConfig(userConfigUrl) {
     if (!isPlainObject(config)) {
       throw new TypeError("default export 必须是对象")
     }
-    assertDataOnly(config, "本地配置")
-    return structuredClone(config)
+    return cloneSafeJsonData(config, { label: "本地配置" })
   } catch (error) {
     throw new Error(`无法加载本地配置 config/config.js：${error.message}`, { cause: error })
   }
@@ -157,115 +149,17 @@ async function writeConfigAtomically(userConfigUrl, config) {
   }
 }
 
-function mergeWithDefaults(defaultValue, userValue, pathParts = []) {
-  if (Array.isArray(defaultValue)) {
-    if (!Array.isArray(userValue)) {
-      return cloneValue(userValue)
-    }
-    if (pathParts.at(-1) === "backends") {
-      return userValue.map((item) => {
-        if (!isPlainObject(item)) {
-          return cloneValue(item)
-        }
-        const matching = defaultValue.find((candidate) =>
-          isPlainObject(candidate) && candidate.key === item.key
-        )
-        const template = matching || commonObjectDefaults(defaultValue)
-        return mergeWithDefaults(template, item, pathParts)
-      })
-    }
-    return cloneValue(userValue)
-  }
-
-  if (!isPlainObject(defaultValue) || !isPlainObject(userValue)) {
-    return cloneValue(userValue)
-  }
-
-  const result = cloneValue(defaultValue)
-  for (const [key, value] of Object.entries(userValue)) {
-    if (value === undefined) {
-      continue
-    }
-    result[key] = Object.hasOwn(defaultValue, key)
-      ? mergeWithDefaults(defaultValue[key], value, [...pathParts, key])
-      : cloneValue(value)
-  }
-  return result
-}
-
-function cloneValue(value) {
-  if (Array.isArray(value)) {
-    return value.map(cloneValue)
-  }
-  if (isPlainObject(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneValue(item)]))
-  }
-  return value
-}
-
 function renderConfig(config) {
   return `export default ${JSON.stringify(config, null, 2)}\n`
-}
-
-function commonObjectDefaults(values) {
-  const objects = values.filter(isPlainObject)
-  if (objects.length === 0) {
-    return {}
-  }
-  const result = {}
-  for (const [key, value] of Object.entries(objects[0])) {
-    if (!BACKEND_IDENTITY_FIELDS.has(key) && objects.slice(1).every((item) =>
-      Object.hasOwn(item, key) && isDeepStrictEqual(item[key], value)
-    )) {
-      result[key] = cloneValue(value)
-    }
-  }
-  return result
-}
-
-function assertDataOnly(value, label, seen = new Set(), pathParts = []) {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return
-  }
-  if (typeof value !== "object") {
-    throw new TypeError(`${label}仅支持普通数据：${displayPath(pathParts)}`)
-  }
-  if (!Array.isArray(value) && !isPlainObject(value)) {
-    throw new TypeError(`${label}仅支持普通数据：${displayPath(pathParts)}`)
-  }
-  if (seen.has(value)) {
-    throw new TypeError(`${label}仅支持普通数据，不能包含循环引用：${displayPath(pathParts)}`)
-  }
-  seen.add(value)
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key === "symbol") {
-      throw new TypeError(`${label}仅支持普通数据：${displayPath(pathParts)}`)
-    }
-    if (Array.isArray(value) && key === "length") {
-      continue
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key)
-    if (!descriptor?.enumerable || descriptor.get || descriptor.set) {
-      throw new TypeError(`${label}仅支持普通数据：${displayPath([...pathParts, key])}`)
-    }
-    assertDataOnly(descriptor.value, label, seen, [...pathParts, key])
-  }
-  seen.delete(value)
 }
 
 function displayPath(pathParts) {
   return pathParts.length ? pathParts.join(".") : "<root>"
 }
 
-function readConfigVersion(config, label, required) {
+function readConfigVersion(config, label) {
   if (!Object.hasOwn(config, "configVersion")) {
-    if (required) {
-      throw new Error(`${label}缺少 configVersion`)
-    }
-    return 0
+    throw new Error(`${label}缺少 configVersion`)
   }
   const version = config.configVersion
   if (!Number.isInteger(version) || version < 0) {
@@ -274,15 +168,18 @@ function readConfigVersion(config, label, required) {
   return version
 }
 
-function isPlainObject(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false
-  }
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === null || (
-    Object.prototype.toString.call(value) === "[object Object]"
-    && Object.getPrototypeOf(prototype) === null
-  )
+function isOpenObject(pathParts) {
+  return pathParts.length === 2
+    && pathParts[0] === "turtleSoupAi"
+    && pathParts[1] === "extraBody"
+}
+
+function sameValueType(schema, value) {
+  return schema === null ? value === null : typeof schema === typeof value
+}
+
+function valueType(value) {
+  return value === null ? "null" : typeof value
 }
 
 function defaultLog(message) {

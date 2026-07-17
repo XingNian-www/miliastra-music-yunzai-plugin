@@ -10,8 +10,9 @@ export default {
     endpoint: "https://api.openai.com/v1/responses",
     proxyUrl: "",
     apiKey: "",
+    // 使用 GPT-5.6；最高思维档位用于复杂海龟汤逻辑整理。
     model: "gpt-5.6",
-    reasoningEffort: "medium",
+    reasoningEffort: "max",
     verbosity: "high",
     extraBody: {},
     maxOutputTokens: 16384,

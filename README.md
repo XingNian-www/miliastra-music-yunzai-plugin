@@ -34,7 +34,7 @@ export default {
     proxyUrl: "",
     apiKey: "你的 API Key",
     model: "gpt-5.6",
-    reasoningEffort: "medium",
+    reasoningEffort: "max",
     verbosity: "high",
     extraBody: {},
     maxOutputTokens: 16384,
@@ -60,19 +60,19 @@ export default {
 
 `config/config.js` 已加入 `.gitignore`，插件更新时不会被 `git pull` 覆盖。`config/default.js` 是插件跟踪的配置结构，请只修改自动生成的 `config/config.js`。
 
-`turtleSoupAi.endpoint` 是以 `/responses` 结尾的完整请求地址，可以改为代理或自建网关，也可以带网关要求的查询参数，但同一个查询参数名不能重复；OpenAI SDK 无法通过 `defaultQuery` 无损表达重复键，插件会在发送前明确拒绝这类地址，避免静默改变请求。目标必须兼容 OpenAI Responses API 和 `text.format` 严格 JSON Schema。插件不会自动回退到 Chat Completions，也不会自动重试失败的 AI 请求。默认提示词的可读版本位于 `lib/turtle-soup-prompt.js`，首次生成或迁移配置时会完整写入 `systemPrompt`，之后可在本地配置中覆盖。
+`turtleSoupAi.endpoint` 是以 `/responses` 结尾的完整请求地址，可以改为代理或自建网关，也可以带网关要求的查询参数，但同一个查询参数名不能重复；OpenAI SDK 无法通过 `defaultQuery` 无损表达重复键，插件会在发送前明确拒绝这类地址，避免静默改变请求。目标必须兼容 OpenAI Responses API 和 `text.format` 严格 JSON Schema。插件不会自动回退到 Chat Completions，也不会自动重试失败的 AI 请求。默认提示词的可读版本位于 `lib/turtle-soup-prompt.js`，首次生成配置时会完整写入 `systemPrompt`，之后可在本地配置中覆盖。
 
-`turtleSoupAi.extraBody` 默认是空对象，用于向兼容网关传递标准请求体之外的第三方扩展字段。插件会先展开 `extraBody`，再写入自身使用的 OpenAI Responses 标准字段，因此 `model`、`instructions`、`input`、`reasoning`、`text`、`max_output_tokens`、`store` 和 `stream` 等冲突项始终以插件标准值为准。该配置只能是安全、可序列化的普通 JSON 对象，不能把数组、`null` 或带自定义原型的对象用作顶层值。已有配置缺少该字段时会自动补为 `{}`，已有 AI 密钥和扩展字段保持不变。
+`turtleSoupAi.extraBody` 默认是空对象，用于向兼容网关传递标准请求体之外的第三方扩展字段。插件会先展开 `extraBody`，再写入自身使用的 OpenAI Responses 标准字段，因此 `model`、`instructions`、`input`、`reasoning`、`text`、`max_output_tokens`、`store` 和 `stream` 等冲突项始终以插件标准值为准。该配置只能是安全、可序列化的普通 JSON 对象，不能把数组、`null` 或带自定义原型的对象用作顶层值。`extraBody` 内允许任意普通 JSON 字段；它以外的配置不允许未知字段。
 
-自定义 `systemPrompt` 时必须要求模型返回 `title`、`surface`、`bottom`、`adjudicationNotes` 和 `logicReview`。v3 会保留自定义提示词，不会自动改写其中的输出约定。
+自定义 `systemPrompt` 时必须要求模型返回 `title`、`surface`、`bottom`、`adjudicationNotes` 和 `logicReview`。插件会原样使用当前配置中的自定义提示词，不会自动改写其中的输出约定。
 
 `turtleSoupAi.proxyUrl` 只代理 AI 请求，不影响千星后端 API。留空表示直连；HTTP 代理示例为 `http://127.0.0.1:7890`，需要认证时可使用 `http://用户名:密码@代理地址:端口`。同时接受 HTTPS 代理地址，不支持 SOCKS。
 
-每次加载时，插件会检查 `configVersion`。升级后的默认配置存在新增字段时，插件会自动补入本地配置并原子写回；已有后端、地址、访问令牌、AI 密钥和未知扩展字段都会保留，每个自定义后端也会补齐新增的后端字段。配置版本高于当前插件时只读取、不降级或覆盖。
+每次加载时，插件都会严格检查 `configVersion`、全部必需字段、字段类型和未知字段。已有文件必须与当前 `config/default.js` 使用相同版本和完整结构；旧版本、未来版本、缺失字段及未知字段都会直接报错，插件不会迁移、补默认值或改写已有文件。自定义后端可以自由增删，但每个后端必须完整包含当前后端结构中的字段。
 
-修改 `config/config.js` 后发送 `#千星重载配置` 即可在不重启 Yunzai 的情况下生效。重载会先完整读取、校验并迁移新配置，再原地替换运行时配置；读取失败时会回复错误并继续使用上一次有效配置。
+修改 `config/config.js` 后发送 `#千星重载配置` 即可在不重启 Yunzai 的情况下生效。重载会先完整读取并严格校验新配置，再原地替换运行时配置；读取失败时会回复错误并继续使用上一次有效配置。
 
-本地配置按普通数据对象管理，只支持 `export default { ... }` 对象字面量。为避免迁移时执行代码或把环境变量密钥固化到文件，`process.env`、import、函数、getter 和其他运行逻辑会被拒绝。发生生成或迁移时会规范化写回，手写注释不保证保留。
+本地配置按普通数据对象管理，只支持 `export default { ... }` 对象字面量。为避免加载配置时执行代码或意外展开环境变量密钥，`process.env`、import、函数、getter 和其他运行逻辑会被拒绝。只有文件不存在时插件才会生成并写入完整配置；已有文件通过校验后保持原文和注释不变。
 
 如果 `config/config.js` 存在语法错误或 default export 不是对象，插件会停止加载并报告错误，不会覆盖原文件。不要手动修改 `configVersion`。
 
@@ -80,7 +80,7 @@ export default {
 
 `key` 会用于命令里的后端选择，例如 `#千星A状态`。不要把后端 key 配成 `状态`、`监控`、`队列`、`健康`、`海龟汤状态`、`卧底状态`、`启动原神`、`进入千星`、`截图`、`列表` 或 `重载配置`。
 
-旧版本没有 `configVersion` 的配置会被识别为 v0，并逐步迁移到当前版本。v1 升级到 v2 时，`maxTokens` 会迁移为 `maxOutputTokens`，废弃的 AI `enabled` 字段会移除。未配置密钥且仍使用旧版默认 DeepSeek 地址时会更新为 OpenAI 默认值；已经配置密钥或自定义地址时会原样保留，避免把第三方密钥发送到其他服务。v2 升级到 v3 时只会把旧版默认系统提示词换为新的保守审稿提示词，用户自定义提示词保持不变。保留下来的端点如果只支持 Chat Completions，需要手动改为兼容 Responses API 的地址。
+旧配置不会自动迁移。升级插件后如果配置结构发生变化，请先备份密钥、地址和自定义提示词，再以新的 `config/default.js` 或首次生成的 `config/config.js` 为模板手工填写当前配置。
 
 ## 命令
 
