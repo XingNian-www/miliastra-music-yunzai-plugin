@@ -34,6 +34,7 @@ import {
   formatTurtleSoupSnapshot,
   formatUndercoverSnapshot
 } from "../lib/monitor-format.js"
+import { networkLogger, runLoggedNetworkRequest } from "../lib/network-logger.js"
 import { optimizeTurtleSoup } from "../lib/turtle-soup-ai.js"
 import { submitTurtleSoupQuestion } from "../lib/turtle-soup-api.js"
 import {
@@ -849,12 +850,16 @@ async function apiFetch(backend, path, query = {}, options = {}) {
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await runLoggedNetworkRequest(networkLogger, {
+      source: "qianxing-backend",
+      method,
+      url
+    }, () => fetch(url, {
       method,
       signal: controller.signal,
       headers,
       body
-    })
+    }))
     if (!response.ok) {
       const body = await response.text().catch(() => "")
       throw new ApiError(response.status, body)

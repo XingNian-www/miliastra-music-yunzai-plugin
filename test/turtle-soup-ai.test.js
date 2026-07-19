@@ -114,6 +114,39 @@ test("optimizes through the Responses API with strict structured output", async 
   assert.deepEqual(result, completeDraft)
 })
 
+test("logs AI request metadata without logging request content", async () => {
+  const entries = []
+  const result = await optimizeTurtleSoup({ rawContent: "不得写入日志的初稿" }, {
+    ...aiConfig(),
+    endpoint: "https://gateway.example/v1/responses?api-version=2026-07-19",
+    proxyUrl: "http://proxy-user:proxy-password@127.0.0.1:7890"
+  }, undefined, {
+    proxyFetchImpl: async () => responseJson({
+      status: "completed",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: JSON.stringify(completeDraft) }]
+      }]
+    }),
+    createProxyAgent: async () => ({ destroy() {} }),
+    networkLogger: {
+      record(entry) {
+        entries.push(entry)
+      }
+    }
+  })
+
+  assert.deepEqual(result, completeDraft)
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].source, "turtle-soup-ai")
+  assert.equal(entries[0].method, "POST")
+  assert.equal(entries[0].url, "https://gateway.example/v1/responses?api-version=2026-07-19")
+  assert.equal(entries[0].proxyUrl, "http://proxy-user:proxy-password@127.0.0.1:7890/")
+  assert.equal(entries[0].status, 200)
+  assert.equal(entries[0].outcome, "success")
+  assert.equal(Object.hasOwn(entries[0], "input"), false)
+})
+
 test("passes safe extraBody fields while standard Responses fields win conflicts", async () => {
   let body
   const result = await optimizeTurtleSoup({ rawContent: "初稿" }, {

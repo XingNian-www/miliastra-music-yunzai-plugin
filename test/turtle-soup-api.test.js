@@ -57,8 +57,14 @@ test("adds the contributor to the surface only when building the final JSON", as
 
 test("retries one non-successful response before returning success", async () => {
   let attempts = 0
+  const networkEntries = []
   const receipt = await submitTurtleSoupQuestion(backend, draft, {
     timeoutMs: 1000,
+    networkLogger: {
+      record(entry) {
+        networkEntries.push(entry)
+      }
+    },
     fetchImpl: async () => {
       attempts += 1
       if (attempts === 1) {
@@ -70,6 +76,15 @@ test("retries one non-successful response before returning success", async () =>
 
   assert.equal(attempts, 2)
   assert.equal(receipt.id, "soup-0002")
+  assert.deepEqual(networkEntries.map((entry) => ({
+    source: entry.source,
+    attempt: entry.attempt,
+    status: entry.status,
+    outcome: entry.outcome
+  })), [
+    { source: "turtle-soup-submit", attempt: 1, status: 503, outcome: "http_error" },
+    { source: "turtle-soup-submit", attempt: 2, status: 200, outcome: "success" }
+  ])
 })
 
 test("retries one network failure and reports the second failure", async () => {
