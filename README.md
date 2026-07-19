@@ -66,7 +66,7 @@ export default {
 
 自定义 `systemPrompt` 时必须要求模型返回 `title`、`surface`、`bottom`、`adjudicationNotes` 和 `logicReview`。插件会原样使用当前配置中的自定义提示词，不会自动改写其中的输出约定。
 
-`turtleSoupAi.proxyUrl` 只代理 AI 请求，不影响千星后端 API。留空表示直连；HTTP 代理示例为 `http://127.0.0.1:7890`，需要认证时可使用 `http://用户名:密码@代理地址:端口`。同时接受 HTTPS 代理地址，不支持 SOCKS。
+`turtleSoupAi.proxyUrl` 只代理 AI 请求，不影响千星后端 API。留空表示直连；HTTP 代理示例为 `http://127.0.0.1:7890`，需要认证时可使用 `http://用户名:密码@代理地址:端口`。同时接受 HTTPS 代理地址，不支持 SOCKS。启用代理时插件会显式使用 `node-fetch` 和 `HttpsProxyAgent`，即使 TRSS 或其他插件预先初始化了 OpenAI Web Fetch shim，也不会绕过配置的代理。
 
 每次加载时，插件都会严格检查 `configVersion`、全部必需字段、字段类型和未知字段。已有文件必须与当前 `config/default.js` 使用相同版本和完整结构；旧版本、未来版本、缺失字段及未知字段都会直接报错，插件不会迁移、补默认值或改写已有文件。自定义后端可以自由增删，但每个后端必须完整包含当前后端结构中的字段。
 

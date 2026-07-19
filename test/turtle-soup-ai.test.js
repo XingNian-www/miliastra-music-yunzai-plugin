@@ -1,8 +1,10 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { createServer, request as httpRequest } from "node:http"
 import { connect } from "node:net"
+import { fileURLToPath } from "node:url"
 
 import {
   buildTurtleSoupInput,
@@ -356,6 +358,62 @@ test("uses the configured proxy even when TRSS provides global fetch", async (t)
   assert.ok(proxyHits > 0)
   assert.equal(receivedBodies.length, 1)
   assert.deepEqual(result, completeDraft)
+})
+
+test("does not bypass the proxy when another plugin initializes the OpenAI web shim", async (t) => {
+  const target = createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" })
+    response.end(JSON.stringify({
+      status: "completed",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: JSON.stringify(completeDraft) }]
+      }]
+    }))
+  })
+  const targetPort = await listen(target)
+  let proxyHits = 0
+  const proxy = createServer()
+  proxy.on("connect", (request, clientSocket, head) => {
+    proxyHits += 1
+    const [host, port] = request.url.split(":")
+    const targetSocket = connect(Number(port), host, () => {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n")
+      if (head.length) {
+        targetSocket.write(head)
+      }
+      targetSocket.pipe(clientSocket)
+      clientSocket.pipe(targetSocket)
+    })
+    targetSocket.on("error", (error) => clientSocket.destroy(error))
+    clientSocket.on("error", () => targetSocket.destroy())
+  })
+  const proxyPort = await listen(proxy)
+  t.after(async () => {
+    await Promise.all([closeServer(proxy), closeServer(target)])
+  })
+
+  const fixture = fileURLToPath(new URL(
+    "../test-fixtures/web-shim-proxy-probe.mjs",
+    import.meta.url
+  ))
+  const child = spawn(process.execPath, [fixture], {
+    env: {
+      ...process.env,
+      TEST_AI_ENDPOINT: `http://127.0.0.1:${targetPort}/v1/responses`,
+      TEST_PROXY_URL: `http://127.0.0.1:${proxyPort}`
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  })
+  let stderr = ""
+  child.stderr.setEncoding("utf8")
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk
+  })
+  const [exitCode] = await once(child, "exit")
+
+  assert.equal(exitCode, 0, stderr)
+  assert.ok(proxyHits > 0)
 })
 
 test("rejects invalid AI proxy protocols before sending content", async () => {
