@@ -62,6 +62,8 @@ export default {
 
 `turtleSoupAi.endpoint` 是以 `/responses` 结尾的完整请求地址，可以改为代理或自建网关，也可以带网关要求的查询参数，但同一个查询参数名不能重复；OpenAI SDK 无法通过 `defaultQuery` 无损表达重复键，插件会在发送前明确拒绝这类地址，避免静默改变请求。目标必须兼容 OpenAI Responses API 和 `text.format` 严格 JSON Schema。插件不会自动回退到 Chat Completions，也不会自动重试失败的 AI 请求。默认提示词的可读版本位于 `lib/turtle-soup-prompt.js`，首次生成配置时会完整写入 `systemPrompt`，之后可在本地配置中覆盖。
 
+海龟汤 AI 请求使用 Responses API 流式接收。插件会在内存中收集完整输出，收到终止事件并通过 JSON Schema 结果校验后，才把完整结果交给现有预览回复流程；不会把 token 增量逐条发送到聊天。预览超过 QQ 单条消息的可靠长度时，仍按原有规则分段发送。`turtleSoupAi.timeoutMs` 覆盖从建立请求到流结束的整个过程。
+
 `turtleSoupAi.extraBody` 默认是空对象，用于向兼容网关传递标准请求体之外的第三方扩展字段。插件会先展开 `extraBody`，再写入自身使用的 OpenAI Responses 标准字段，因此 `model`、`instructions`、`input`、`reasoning`、`text`、`max_output_tokens`、`store` 和 `stream` 等冲突项始终以插件标准值为准。该配置只能是安全、可序列化的普通 JSON 对象，不能把数组、`null` 或带自定义原型的对象用作顶层值。`extraBody` 内允许任意普通 JSON 字段；它以外的配置不允许未知字段。
 
 自定义 `systemPrompt` 时必须要求模型返回 `title`、`surface`、`bottom`、`adjudicationNotes` 和 `logicReview`。插件会原样使用当前配置中的自定义提示词，不会自动改写其中的输出约定。

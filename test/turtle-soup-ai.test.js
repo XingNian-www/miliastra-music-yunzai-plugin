@@ -74,7 +74,7 @@ test("optimizes through the Responses API with strict structured output", async 
   let request
   const fetchImpl = async (endpoint, options) => {
     request = { endpoint, options }
-    return responseJson({
+    return responseStream({
       status: "completed",
       output: [{
         type: "message",
@@ -111,7 +111,7 @@ test("optimizes through the Responses API with strict structured output", async 
   assert.equal(body.text.format.schema.additionalProperties, false)
   assert.equal(body.max_output_tokens, 16384)
   assert.equal(body.store, false)
-  assert.equal(body.stream, false)
+  assert.equal(body.stream, true)
   assert.equal(Object.hasOwn(body, "temperature"), false)
   assert.deepEqual(result, completeDraft)
 })
@@ -123,7 +123,7 @@ test("logs AI request metadata without logging request content", async () => {
     endpoint: "https://gateway.example/v1/responses?api-version=2026-07-19",
     proxyUrl: "http://proxy-user:proxy-password@127.0.0.1:7890"
   }, undefined, {
-    proxyFetchImpl: async () => responseJson({
+    proxyFetchImpl: async () => responseStream({
       status: "completed",
       output: [{
         type: "message",
@@ -169,7 +169,7 @@ test("passes safe extraBody fields while standard Responses fields win conflicts
     }
   }, async (_endpoint, options) => {
     body = JSON.parse(options.body)
-    return responseJson({
+    return responseStream({
       status: "completed",
       output: [{
         type: "message",
@@ -186,7 +186,7 @@ test("passes safe extraBody fields while standard Responses fields win conflicts
   assert.equal(body.text.format.type, "json_schema")
   assert.equal(body.max_output_tokens, 16384)
   assert.equal(body.store, false)
-  assert.equal(body.stream, false)
+  assert.equal(body.stream, true)
   assert.deepEqual(body.vendor_extension, {
     enabled: true,
     values: [1, null, "兼容"]
@@ -231,7 +231,7 @@ test("preserves a complete custom Responses endpoint including its query", async
     endpoint: "https://gateway.example/openai/v1/responses?api-version=2026-07-15"
   }, async (endpoint) => {
     requestedEndpoint = endpoint
-    return responseJson({
+    return responseStream({
       status: "completed",
       output: [{
         type: "message",
@@ -273,7 +273,7 @@ test("routes only AI requests through the configured HTTP proxy", async () => {
   }
   const proxyFetchImpl = async (endpoint, options) => {
     request = { endpoint, options }
-    return responseJson({
+    return responseStream({
       status: "completed",
       output: [{
         type: "message",
@@ -305,8 +305,8 @@ test("uses the configured proxy even when TRSS provides global fetch", async (t)
     request.on("data", (chunk) => chunks.push(chunk))
     request.on("end", () => {
       receivedBodies.push(Buffer.concat(chunks).toString("utf8"))
-      response.writeHead(200, { "Content-Type": "application/json" })
-      response.end(JSON.stringify({
+      response.writeHead(200, { "Content-Type": "text/event-stream" })
+      response.end(responseStreamBody({
         status: "completed",
         output: [{
           type: "message",
@@ -362,8 +362,8 @@ test("uses the configured proxy even when TRSS provides global fetch", async (t)
 
 test("does not bypass the proxy when another plugin initializes the OpenAI web shim", async (t) => {
   const target = createServer((_request, response) => {
-    response.writeHead(200, { "Content-Type": "application/json" })
-    response.end(JSON.stringify({
+    response.writeHead(200, { "Content-Type": "text/event-stream" })
+    response.end(responseStreamBody({
       status: "completed",
       output: [{
         type: "message",
@@ -433,7 +433,7 @@ test("rejects invalid AI proxy protocols before sending content", async () => {
 
 test("rejects refusals and incomplete Responses API results", async () => {
   await assert.rejects(
-    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => responseJson({
+    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => responseStream({
       status: "completed",
       output: [{
         type: "message",
@@ -444,10 +444,13 @@ test("rejects refusals and incomplete Responses API results", async () => {
   )
 
   await assert.rejects(
-    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => responseJson({
+    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => responseStream({
       status: "incomplete",
       incomplete_details: { reason: "max_output_tokens" },
-      output: []
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: "{\"title\":\"部分输出\"" }]
+      }]
     })),
     /响应未完成：max_output_tokens/
   )
@@ -493,11 +496,50 @@ test("keeps timeout failures compatible with the workflow AbortError mapping", a
 
 test("reports invalid JSON from a successful AI response", async () => {
   await assert.rejects(
-    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => new Response("{", {
-      status: 200,
-      headers: { "Content-Type": "application/json" }
+    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => responseStream({
+      status: "completed",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: "{invalid}" }]
+      }]
     })),
-    /返回的响应不是有效 JSON/
+    /JSON 无法解析/
+  )
+})
+
+test("applies timeout to the complete response stream", async () => {
+  const streamingFetch = async (_endpoint, options) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(
+        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\"}\n\n"
+      ))
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("aborted")
+        error.name = "AbortError"
+        controller.error(error)
+      }, { once: true })
+    }
+  }), {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" }
+  })
+
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, {
+      ...aiConfig(),
+      timeoutMs: 10
+    }, streamingFetch),
+    (error) => error.name === "AbortError" && /请求超时/.test(error.message)
+  )
+})
+
+test("rejects a stream that ends without a terminal response event", async () => {
+  await assert.rejects(
+    optimizeTurtleSoup({ rawContent: "初稿" }, aiConfig(), async () => new Response(
+      "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\ndata: [DONE]\n\n",
+      { status: 200, headers: { "Content-Type": "text/event-stream" } }
+    )),
+    /流式响应意外中断/
   )
 })
 
@@ -565,6 +607,47 @@ function responseJson(payload, options = {}) {
     status: options.status ?? 200,
     headers: { "Content-Type": "application/json" }
   })
+}
+
+function responseStream(payload, options = {}) {
+  return new Response(responseStreamBody(payload), {
+    status: options.status ?? 200,
+    headers: { "Content-Type": "text/event-stream" }
+  })
+}
+
+function responseStreamBody(payload) {
+  const outputText = payload.output
+    ?.flatMap((output) => output.content || [])
+    .filter((content) => content.type === "output_text")
+    .map((content) => content.text)
+    .join("") || ""
+  const midpoint = Math.ceil(outputText.length / 2)
+  const deltas = outputText
+    ? [outputText.slice(0, midpoint), outputText.slice(midpoint)]
+    : []
+  const terminalType = payload.status === "completed"
+    ? "response.completed"
+    : payload.status === "incomplete"
+      ? "response.incomplete"
+      : "response.failed"
+  const events = [
+    ...deltas.filter(Boolean).map((delta, index) => ({
+      type: "response.output_text.delta",
+      delta,
+      sequence_number: index
+    })),
+    {
+      type: terminalType,
+      response: payload,
+      sequence_number: deltas.length
+    }
+  ]
+  return `${events.map((event) => [
+    `event: ${event.type}`,
+    `data: ${JSON.stringify(event)}`,
+    ""
+  ].join("\n")).join("\n")}\ndata: [DONE]\n\n`
 }
 
 async function listen(server) {
