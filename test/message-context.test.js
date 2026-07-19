@@ -4,6 +4,8 @@ import assert from "node:assert/strict"
 import {
   conversationKey,
   isPrivateMessage,
+  senderId,
+  senderMemoryKey,
   senderDisplayName
 } from "../lib/message-context.js"
 
@@ -49,4 +51,17 @@ test("uses the Yunzai sender card or nickname for submission attribution", () =>
   assert.equal(senderDisplayName({ sender: { nickname: "昵称" }, user_id: 123 }), "昵称")
   assert.equal(senderDisplayName({ nickname: "事件昵称", user_id: 123 }), "事件昵称")
   assert.equal(senderDisplayName({ user_id: 123 }), "123")
+})
+
+test("identifies a QQ user across groups while isolating bots", () => {
+  const event = {
+    adapter: "QQ",
+    self_id: "bot-1",
+    group_id: "group-1",
+    user_id: 123456
+  }
+  assert.equal(senderId(event), "123456")
+  assert.equal(senderMemoryKey(event), "QQ:bot-1:123456")
+  assert.equal(senderMemoryKey({ ...event, group_id: "group-2" }), "QQ:bot-1:123456")
+  assert.notEqual(senderMemoryKey(event), senderMemoryKey({ ...event, self_id: "bot-2" }))
 })

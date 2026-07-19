@@ -1,5 +1,14 @@
 import plugin from "../../../lib/plugins/plugin.js"
 import config, { reloadConfig } from "../config/index.js"
+import { loadChatAliasStore } from "../lib/chat-alias-store.js"
+import {
+  buildChatRelayQuery,
+  CHAT_ALIAS_RULE,
+  ChatBackendMemory,
+  CHAT_RELAY_RULE,
+  parseChatAliasCommand,
+  parseChatRelayCommand
+} from "../lib/chat-relay.js"
 import {
   createCommandParser,
   extractTurtleSoupPreferences,
@@ -8,6 +17,8 @@ import {
 import {
   conversationKey,
   isPrivateMessage,
+  senderId,
+  senderMemoryKey,
   senderDisplayName
 } from "../lib/message-context.js"
 import {
@@ -60,11 +71,14 @@ const ACTIONS = [
 ]
 const API_METHODS = new Map([
   ["/screenshot", "GET"],
+  ["/chat/send", "POST"],
   ...READ_ACTIONS.flatMap((item) => item.paths.map((path) => [path, "GET"])),
   ...STARTUP_ACTIONS.map((item) => [item.path, "POST"])
 ])
 const SELECTOR_TTL_MS = 60_000
 const pendingSelections = new Map()
+const chatBackendMemory = new ChatBackendMemory()
+const chatAliasStore = await loadChatAliasStore(new URL("../config/chat-aliases.json", import.meta.url))
 const parseCommand = createCommandParser(ACTIONS, (key) => Boolean(findBackend(key)))
 const turtleSoupWorkflow = new TurtleSoupSubmissionWorkflow({
   optimize: (request) => optimizeTurtleSoup(request, config.turtleSoupAi),
@@ -78,10 +92,19 @@ export class qianxing extends plugin {
   constructor() {
     super({
       name: "千星点歌监控",
-      dsc: "Miliastra Wonderland Music 监控与启动插件",
+      dsc: "Miliastra Wonderland Music 监控、启动与 QQ 代发言插件",
       event: "message",
       priority: 5000,
       rule: [
+        {
+          reg: CHAT_ALIAS_RULE,
+          fnc: "handleChatAlias",
+          permission: "master"
+        },
+        {
+          reg: CHAT_RELAY_RULE,
+          fnc: "handleChatRelay"
+        },
         {
           reg: QIANXING_MESSAGE_RULE,
           fnc: "handleQianxing"
@@ -160,6 +183,75 @@ export class qianxing extends plugin {
     return true
   }
 
+  async handleChatRelay(e = this.e) {
+    const command = parseChatRelayCommand(messageText(e))
+    if (!command) {
+      return false
+    }
+    const qq = senderId(e)
+    if (!/^\d+$/.test(qq)) {
+      await this.replyMessage(e, "无法识别当前用户的 QQ 号")
+      return true
+    }
+
+    const userKey = senderMemoryKey(e)
+    if (command.type === "empty") {
+      await this.replyMessage(e, "请在 ! 后提供发言内容")
+      return true
+    }
+    if (command.type === "switch") {
+      chatBackendMemory.forget(userKey)
+      await this.startChatRelaySelector(e, { qq, userKey })
+      return true
+    }
+
+    const rememberedKey = chatBackendMemory.get(userKey)
+    const rememberedBackend = rememberedKey ? findBackend(rememberedKey) : null
+    if (rememberedBackend) {
+      await this.sendChatRelay(e, rememberedBackend, qq, command.content)
+      return true
+    }
+    if (rememberedKey) {
+      chatBackendMemory.forget(userKey)
+    }
+    await this.startChatRelaySelector(e, {
+      qq,
+      userKey,
+      content: command.content
+    })
+    return true
+  }
+
+  async handleChatAlias(e = this.e) {
+    const command = parseChatAliasCommand(messageText(e))
+    try {
+      if (command?.type === "set") {
+        const nickname = await chatAliasStore.set(command.qq, command.nickname)
+        await this.replyMessage(e, `已将 QQ ${command.qq} 的发言昵称设为 ${nickname}`)
+        return true
+      }
+      if (command?.type === "delete") {
+        const deleted = await chatAliasStore.delete(command.qq)
+        await this.replyMessage(e, deleted
+          ? `已删除 QQ ${command.qq} 的发言昵称`
+          : `QQ ${command.qq} 没有发言昵称映射`)
+        return true
+      }
+      if (command?.type === "list") {
+        const entries = chatAliasStore.entries()
+        await this.replyMessage(e, entries.length
+          ? ["QQ 发言昵称：", ...entries.map(([qq, nickname]) => `${qq}：${nickname}`)].join("\n")
+          : "尚未配置 QQ 发言昵称")
+        return true
+      }
+      await this.replyMessage(e, "用法：#发言昵称 QQ号 昵称 / #发言昵称删除 QQ号 / #发言昵称列表")
+      return true
+    } catch (error) {
+      await this.replyMessage(e, `QQ 发言昵称操作失败：${error?.message || "未知错误"}`)
+      return true
+    }
+  }
+
   async handleSelection(e = this.e) {
     const key = selectionKey(e)
     const selection = pendingSelections.get(key)
@@ -176,6 +268,18 @@ export class qianxing extends plugin {
     }
 
     pendingSelections.delete(key)
+    if (selection.type === "chat-relay") {
+      if (selection.content) {
+        const sent = await this.sendChatRelay(e, backend, selection.qq, selection.content)
+        if (sent) {
+          chatBackendMemory.remember(selection.userKey, backend.key)
+        }
+      } else {
+        chatBackendMemory.remember(selection.userKey, backend.key)
+        await this.replyMessage(e, `已切换发言后端为${backend.name}，1 小时内有效`)
+      }
+      return true
+    }
     if (selection.type === "turtle-soup-submit") {
       const preview = turtleSoupWorkflow.getPreview(key)
       if (!preview || preview.revision !== selection.previewRevision) {
@@ -214,6 +318,42 @@ export class qianxing extends plugin {
       "",
       `回复 1-${backends.length} ${selectorInstruction(parsed.action)}`
     ].join("\n"))
+  }
+
+  async startChatRelaySelector(e, selection) {
+    const backends = normalizedBackends()
+    if (backends.length === 0) {
+      await this.replyMessage(e, "未配置千星后端")
+      return
+    }
+    const summaries = await Promise.all(backends.map((backend) => statusLine(backend)))
+    pendingSelections.set(selectionKey(e), {
+      type: "chat-relay",
+      ...selection,
+      expiresAt: Date.now() + SELECTOR_TTL_MS
+    })
+    await this.replyMessage(e, [
+      selection.content ? "请选择发言后端：" : "请选择新的发言后端：",
+      ...summaries.map((line, index) => `${index + 1}. ${line}`),
+      "",
+      `回复 1-${backends.length} 选择对应后端`
+    ].join("\n"))
+  }
+
+  async sendChatRelay(e, backend, qq, content) {
+    const identity = chatAliasStore.get(qq) || qq
+    try {
+      const receipt = await apiJson(
+        backend,
+        "/chat/send",
+        buildChatRelayQuery(content, identity)
+      )
+      await this.replyMessage(e, formatChatRelayReceipt(backend, receipt))
+      return true
+    } catch (error) {
+      await this.replyMessage(e, formatActionError(backend, error))
+      return false
+    }
   }
 
   async runBroadcast(e, parsed) {
@@ -338,6 +478,7 @@ export class qianxing extends plugin {
     try {
       await reloadConfig()
       pendingSelections.clear()
+      chatBackendMemory.clear()
       await this.replyMessage(e, "千星插件配置已重载")
     } catch (error) {
       await this.replyMessage(e, `千星插件配置重载失败：${error?.message || "未知错误"}`)
@@ -421,6 +562,7 @@ function formatBackendList() {
 function formatHelp() {
   return [
     "千星点歌监控命令：",
+    "QQ 代发言：!内容 或 ！内容；#发言切换后端",
     "#千星状态 / #千星监控 / #千星队列 / #千星健康",
     "#千星海龟汤状态 / #千星卧底状态",
     "#千星启动原神 / #千星进入千星 / #千星截图 / #千星列表 / #千星重载配置",
@@ -514,6 +656,19 @@ function formatStartupReceipt(reply, receipt = {}) {
     details.push(`队列第 ${receipt.position} 位`)
   }
   return details.length ? `${reply}（${details.join("，")}）` : reply
+}
+
+function formatChatRelayReceipt(backend, receipt = {}) {
+  const details = []
+  if (receipt.taskId !== undefined && receipt.taskId !== null) {
+    details.push(`任务 #${receipt.taskId}`)
+  }
+  if (Number(receipt.position) > 0) {
+    details.push(`队列第 ${receipt.position} 位`)
+  }
+  return details.length
+    ? `${backend.name}：发言已加入队列（${details.join("，")}）`
+    : `${backend.name}：发言已加入队列`
 }
 
 function apiErrorDetail(error) {
