@@ -22,6 +22,12 @@ import {
   senderDisplayName
 } from "../lib/message-context.js"
 import {
+  buildSongRequestQuery,
+  formatSongRequestReceipt,
+  parseSongRequestCommand,
+  SONG_REQUEST_RULE
+} from "../lib/song-request.js"
+import {
   formatMonitorSnapshot,
   formatPlayerStatus,
   formatQueue,
@@ -72,6 +78,7 @@ const ACTIONS = [
 const API_METHODS = new Map([
   ["/screenshot", "GET"],
   ["/chat/send", "POST"],
+  ["/searchPlay", "POST"],
   ...READ_ACTIONS.flatMap((item) => item.paths.map((path) => [path, "GET"])),
   ...STARTUP_ACTIONS.map((item) => [item.path, "POST"])
 ])
@@ -92,7 +99,7 @@ export class qianxing extends plugin {
   constructor() {
     super({
       name: "千星点歌监控",
-      dsc: "Miliastra Wonderland Music 监控、启动与 QQ 代发言插件",
+      dsc: "Miliastra Wonderland Music 监控、启动、QQ 代发言与点歌插件",
       event: "message",
       priority: 5000,
       rule: [
@@ -104,6 +111,10 @@ export class qianxing extends plugin {
         {
           reg: CHAT_RELAY_RULE,
           fnc: "handleChatRelay"
+        },
+        {
+          reg: SONG_REQUEST_RULE,
+          fnc: "handleSongRequest"
         },
         {
           reg: QIANXING_MESSAGE_RULE,
@@ -252,6 +263,50 @@ export class qianxing extends plugin {
     }
   }
 
+  async handleSongRequest(e = this.e) {
+    const command = parseSongRequestCommand(messageText(e))
+    if (!command) {
+      return false
+    }
+    const qq = senderId(e)
+    if (!/^\d+$/.test(qq)) {
+      await this.replyMessage(e, "无法识别当前用户的 QQ 号")
+      return true
+    }
+    const nickname = chatAliasStore.get(qq)
+    if (!nickname) {
+      await this.replyMessage(e, "只有已备注发言昵称的用户可以点歌")
+      return true
+    }
+    if (!command.keyword) {
+      await this.replyMessage(e, "请使用 #点歌 歌名或歌手")
+      return true
+    }
+    try {
+      buildSongRequestQuery(command.keyword, command.source)
+    } catch (error) {
+      await this.replyMessage(e, error.message)
+      return true
+    }
+
+    const userKey = senderMemoryKey(e)
+    const rememberedKey = chatBackendMemory.get(userKey)
+    const rememberedBackend = rememberedKey ? findBackend(rememberedKey) : null
+    if (rememberedBackend) {
+      await this.sendSongRequest(e, rememberedBackend, command)
+      return true
+    }
+    if (rememberedKey) {
+      chatBackendMemory.forget(userKey)
+    }
+    await this.startSongRequestSelector(e, {
+      qq,
+      userKey,
+      ...command
+    })
+    return true
+  }
+
   async handleSelection(e = this.e) {
     const key = selectionKey(e)
     const selection = pendingSelections.get(key)
@@ -268,6 +323,17 @@ export class qianxing extends plugin {
     }
 
     pendingSelections.delete(key)
+    if (selection.type === "song-request") {
+      if (!chatAliasStore.get(selection.qq)) {
+        await this.replyMessage(e, "你的发言昵称已被删除，无法继续点歌")
+        return true
+      }
+      const sent = await this.sendSongRequest(e, backend, selection)
+      if (sent) {
+        chatBackendMemory.remember(selection.userKey, backend.key)
+      }
+      return true
+    }
     if (selection.type === "chat-relay") {
       if (selection.content) {
         const sent = await this.sendChatRelay(e, backend, selection.qq, selection.content)
@@ -338,6 +404,41 @@ export class qianxing extends plugin {
       "",
       `回复 1-${backends.length} 选择对应后端`
     ].join("\n"))
+  }
+
+  async startSongRequestSelector(e, selection) {
+    const backends = normalizedBackends()
+    if (backends.length === 0) {
+      await this.replyMessage(e, "未配置千星后端")
+      return
+    }
+    const summaries = await Promise.all(backends.map((backend) => statusLine(backend)))
+    pendingSelections.set(selectionKey(e), {
+      type: "song-request",
+      ...selection,
+      expiresAt: Date.now() + SELECTOR_TTL_MS
+    })
+    await this.replyMessage(e, [
+      `请选择${selection.sourceName}《${selection.keyword}》的点歌后端：`,
+      ...summaries.map((line, index) => `${index + 1}. ${line}`),
+      "",
+      `回复 1-${backends.length} 选择对应后端`
+    ].join("\n"))
+  }
+
+  async sendSongRequest(e, backend, request) {
+    try {
+      const receipt = await apiJson(
+        backend,
+        "/searchPlay",
+        buildSongRequestQuery(request.keyword, request.source)
+      )
+      await this.replyMessage(e, formatSongRequestReceipt(backend.name, receipt))
+      return true
+    } catch (error) {
+      await this.replyMessage(e, formatActionError(backend, error))
+      return false
+    }
   }
 
   async sendChatRelay(e, backend, qq, content) {
@@ -563,6 +664,7 @@ function formatHelp() {
   return [
     "千星点歌监控命令：",
     "QQ 代发言：!内容 或 ！内容；#发言切换后端",
+    "昵称用户点歌：#点歌 / #网易点歌 / #B站点歌 <关键词>",
     "#千星状态 / #千星监控 / #千星队列 / #千星健康",
     "#千星海龟汤状态 / #千星卧底状态",
     "#千星启动原神 / #千星进入千星 / #千星截图 / #千星列表 / #千星重载配置",
