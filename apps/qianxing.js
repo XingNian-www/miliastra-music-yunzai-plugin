@@ -27,6 +27,7 @@ import {
   parseSongRequestCommand,
   SONG_REQUEST_RULE
 } from "../lib/song-request.js"
+import { isScreenshotUnavailableResponse } from "../lib/screenshot-response.js"
 import {
   formatMonitorSnapshot,
   formatPlayerStatus,
@@ -196,7 +197,9 @@ export class qianxing extends plugin {
   }
 
   async handleChatRelay(e = this.e) {
-    const command = parseChatRelayCommand(messageText(e))
+    const command = parseChatRelayCommand(messageText(e), {
+      requireDoublePrefix: !isPrivateMessage(e)
+    })
     if (!command) {
       return false
     }
@@ -484,6 +487,10 @@ export class qianxing extends plugin {
       }
       await this.replyMessage(e, await runAction(backend, parsed))
     } catch (error) {
+      if (parsed.action === "截图" && isScreenshotUnavailableError(error)) {
+        await this.replyMessage(e, `${backend.name}：游戏未运行或仍在启动，暂时无法获取截图`)
+        return
+      }
       await this.replyMessage(e, formatActionError(backend, error))
     }
   }
@@ -664,7 +671,7 @@ function formatBackendList() {
 function formatHelp() {
   return [
     "千星点歌监控命令：",
-    "QQ 代发言：!内容 或 ！内容；#发言切换后端",
+    "QQ 代发言：私聊 !内容，群聊 !!内容；#发言切换后端",
     "昵称用户点歌：#点歌 / #网易点歌 / #B站点歌 <关键词>",
     "#千星状态 / #千星监控 / #千星队列 / #千星健康",
     "#千星海龟汤状态 / #千星卧底状态",
@@ -801,6 +808,11 @@ function formatActionError(backend, error) {
     return `${backend.name}：${apiErrorDetail(error)}`
   }
   return `${backend.name}：千星机器人未在线或接口不可用`
+}
+
+function isScreenshotUnavailableError(error) {
+  return error instanceof ApiError &&
+    isScreenshotUnavailableResponse(error.status, error.body)
 }
 
 async function requestScreenshot(backend) {

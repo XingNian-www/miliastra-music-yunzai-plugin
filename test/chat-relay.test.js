@@ -33,6 +33,25 @@ test("parses relay messages and the manual backend switch command", () => {
   assert.equal(new RegExp(CHAT_ALIAS_RULE).test("#发言昵称 123 昵称"), true)
 })
 
+test("requires two fullwidth or halfwidth exclamation marks in group messages", () => {
+  const groupOptions = { requireDoublePrefix: true }
+  assert.equal(parseChatRelayCommand("!单感叹号", groupOptions), null)
+  assert.deepEqual(parseChatRelayCommand("!!半角", groupOptions), {
+    type: "send",
+    content: "半角"
+  })
+  assert.deepEqual(parseChatRelayCommand("！！全角", groupOptions), {
+    type: "send",
+    content: "全角"
+  })
+  assert.deepEqual(parseChatRelayCommand("!！混用", groupOptions), {
+    type: "send",
+    content: "混用"
+  })
+  assert.deepEqual(parseChatRelayCommand("！！", groupOptions), { type: "empty" })
+  assert.deepEqual(parseChatRelayCommand("#发言", groupOptions), { type: "switch" })
+})
+
 test("parses administrator nickname commands", () => {
   assert.deepEqual(parseChatAliasCommand("#发言昵称 123456 测试 用户"), {
     type: "set",
